@@ -340,6 +340,36 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
+// ---------------------------------------------------------------- deep links
+// #p=<photo or camera id> while viewing an image; #v=camX,camY,camZ,targetX,targetY,targetZ (meters) on the map.
+let lastHash = location.hash;
+function writeHash() {
+  if (!state.ready || state.mode === 'flying') return;
+  let h;
+  if (state.mode === 'photo' && state.selected) h = `#p=${state.selected.id}`;
+  else h = '#v=' + [...camera.position.toArray(), ...controls.target.toArray()].map(v => Math.round(v)).join(',');
+  if (h !== lastHash) { lastHash = h; history.replaceState(null, '', h); }
+}
+
+function applyHash(initial) {
+  lastHash = location.hash;
+  const h = decodeURIComponent(location.hash.slice(1));
+  const params = new URLSearchParams(h.includes('=') ? h : `p=${h}`);
+  const id = params.get('p');
+  if (id) {
+    const it = state.items.find(x => String(x.id) === id);
+    if (it) { enterPhoto(it); if (initial) { anim.t = 1; } }
+    return;
+  }
+  const v = (params.get('v') || '').split(',').map(Number);
+  if (v.length === 6 && v.every(Number.isFinite)) {
+    exitPhoto();
+    camera.position.set(v[0], v[1], v[2]);
+    controls.target.set(v[3], v[4], v[5]);
+    controls.update();
+  }
+}
+
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Clock();
 let schedT = 0;
@@ -363,6 +393,7 @@ function frame() {
     tiles.update(focusPoint());
     scheduleProjectors();
     if (state.mode === 'map') renderStrip(false);
+    writeHash();
     const st = tiles.loading ? `streaming tiles (${tiles.loading})…` : '';
     $('status').textContent = st;
   }
@@ -386,9 +417,9 @@ async function main() {
   $('nphotos').textContent = state.photos.length.toLocaleString();
   $('ncams').textContent = state.cams.length.toLocaleString();
   buildMarkers();
-  const hash = decodeURIComponent(location.hash.slice(1));
-  const start = hash && state.items.find(it => String(it.id) === hash);
-  if (start) enterPhoto(start);
+  applyHash(true);
+  state.ready = true;
+  addEventListener('hashchange', () => { if (location.hash !== lastHash) applyHash(false); });
   renderStrip(true);
 }
 
