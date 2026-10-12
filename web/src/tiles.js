@@ -49,10 +49,17 @@ export class TileStreamer {
       t.center = new THREE.Vector3((t.min[0] + t.max[0]) / 2, 0, -(t.min[1] + t.max[1]) / 2);
       b.tiles.push(t);
     }
+    for (const t of idx.detail || []) {
+      const key = `${Math.floor(t.i / k)}_${Math.floor(t.j / k)}`;
+      if (!this.blocks.has(key)) this.blocks.set(key, { key, tiles: [], lod1: null, state: 'coarse' });
+      t.center = new THREE.Vector3((t.min[0] + t.max[0]) / 2, 0, -(t.min[1] + t.max[1]) / 2);
+      (this.blocks.get(key).detail ||= []).push(t);
+    }
     for (const b of this.blocks.values()) {
       const c = new THREE.Vector3();
-      for (const t of b.tiles) c.add(t.center);
-      b.center = c.divideScalar(b.tiles.length);
+      const all = [...b.tiles, ...(b.detail || [])];
+      for (const t of all) c.add(t.center);
+      b.center = c.divideScalar(all.length);
     }
     // Terrain and coarse level load immediately.
     await Promise.all([
@@ -89,8 +96,9 @@ export class TileStreamer {
       const d = Math.hypot(b.center.x - focus.x, b.center.z - focus.z);
       if (d < nearDist && b.state === 'coarse') {
         b.state = 'loading';
-        Promise.all(b.tiles.map(t => this.load(t.file))).then(gs => {
-          b.meshes = gs.map(g => this.addMesh(g, this.mat.building));
+        const parts = [...b.tiles.map(t => [t, this.mat.building]), ...(b.detail || []).map(t => [t, this.mat.detail])];
+        Promise.all(parts.map(([t]) => this.load(t.file))).then(gs => {
+          b.meshes = gs.map((g, n) => this.addMesh(g, parts[n][1]));
           if (b.lod1) b.lod1.visible = false;
           b.state = 'full';
           if (b.wantCoarse) this.unload(b);

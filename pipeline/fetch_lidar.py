@@ -88,20 +88,16 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for f in OUT.glob("*.bin"):
         f.unlink()
-    files = {}
     n = 0
     with ProcessPoolExecutor(int(os.environ.get("WORKERS", "16"))) as ex:
         for i, parts in enumerate(ex.map(fetch_node, [(k, box) for k in keys], chunksize=4)):
             for t, b in parts.items():
-                if t not in files:
-                    files[t] = open(OUT / f"{t}.bin", "ab")
-                files[t].write(b)
+                with open(OUT / f"{t}.bin", "ab") as f:
+                    f.write(b)
                 n += len(b) // DT.itemsize
             if i % 200 == 0:
                 print(i, "/", len(keys), n, "points", flush=True)
-    for f in files.values():
-        f.close()
-    print("done", n, "points in", len(files), "tiles")
+    print("done", n, "points in", len(list(OUT.glob("*.bin"))), "tiles")
 
 
 if __name__ == "__main__":

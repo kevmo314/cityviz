@@ -78,7 +78,10 @@ const frag = /* glsl */`
   uniform float uR[${SLOTS}]; // recency: relative blend weight among overlapping projectors (newer wins)
   uniform vec2 uDist[${SLOTS}]; // (k1, image aspect W/H): radial distortion applied when sampling raw frames
   uniform float uPaint;
-  uniform float uTerrain;
+  uniform sampler2DArray uOrtho;   // aerial imagery layers (see ortho.js)
+  uniform sampler2D uOrthoIdx;     // tile (i + 32, j + 32) -> layer + 1 in red, 0 = not loaded
+  uniform float uOrthoTile;
+  uniform float uTerrain; // surface kind: 0 building, 1 terrain, 2 LiDAR detail
   uniform vec3 uFogColor;
   uniform float uFogDensity;
   varying vec3 vWorld;
@@ -89,8 +92,22 @@ const frag = /* glsl */`
     vec3 L2 = normalize(vec3(-0.6, 0.3, -0.5));
     float diff = 0.48 + 0.42 * max(dot(n, L), 0.0) + 0.12 * max(dot(n, L2), 0.0);
     float lift = mix(0.78, 1.0, smoothstep(0.0, 90.0, vWorld.y));  // darker toward street level
-    vec3 base = uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
+    vec3 base = uTerrain > 1.5 ? vec3(0.50, 0.56, 0.47) * diff  // LiDAR detail: trees, structures
+      : uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
       : (abs(n.y) > 0.7 ? vec3(0.82, 0.82, 0.84) : vec3(0.72, 0.73, 0.76)) * diff * lift;
+    // Aerial imagery as the base for the ground and low roofs (tall towers lean in aerial photos, so they keep shading)
+    if (uOrthoTile > 0.0 && uTerrain < 1.5 && (uTerrain > 0.5 || (n.y > 0.7 && vWorld.y < 70.0))) {
+      vec2 g = vec2(vWorld.x, -vWorld.z) / uOrthoTile;
+      ivec2 ti = ivec2(floor(g)) + 32;
+      if (ti.x >= 0 && ti.y >= 0 && ti.x < 64 && ti.y < 64) {
+        float L = texelFetch(uOrthoIdx, ti, 0).r * 255.0 - 1.0;
+        if (L > -0.5) {
+          vec2 f = fract(g);
+          vec3 o = texture(uOrtho, vec3(f.x, f.y, L)).rgb;
+          base = uTerrain > 0.5 ? o * 0.95 : o * mix(0.85, 1.0, diff);
+        }
+      }
+    }
     vec4 acc = vec4(0.0);
     float cover = 0.0;
     for (int i = 0; i < ${SLOTS}; i++) {
@@ -171,16 +188,19 @@ export class ProjectorSystem {
       uRect: { value: Array.from({ length: SLOTS }, () => new THREE.Vector4(0, 0, 1, 1)) },
       uW: { value: new Array(SLOTS).fill(0) },
       uR: { value: new Array(SLOTS).fill(1) },
+      uOrtho: { value: null },
+      uOrthoIdx: { value: null },
+      uOrthoTile: { value: 0 },
       uDist: { value: Array.from({ length: SLOTS }, () => new THREE.Vector2(0, 1)) },
       uPaint: { value: 1 },
       uFogColor: { value: fogColor },
       uFogDensity: { value: 0.00012 },
     };
-    const mk = terrain => new THREE.ShaderMaterial({
+    const mk = kind => new THREE.ShaderMaterial({
       vertexShader: vert, fragmentShader: frag,
-      uniforms: { ...this.uniforms, uTerrain: { value: terrain ? 1 : 0 } },
+      uniforms: { ...this.uniforms, uTerrain: { value: kind } },
     });
-    this.materials = { building: mk(false), terrain: mk(true) };
+    this.materials = { building: mk(0), terrain: mk(1), detail: mk(2) };
     this.depthMat = new THREE.ShaderMaterial({ vertexShader: depthVert, fragmentShader: depthFrag, uniforms: { uEye: { value: new THREE.Vector3() } } });
     this.blitScene = new THREE.Scene();
     this.blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -194,11 +214,16 @@ export class ProjectorSystem {
 
   // Draw an image/texture into a color layer.
   drawColor(slot, texture) {
+    this.blit(this.colorRT, slot, texture);
+  }
+
+  // Copy a texture into one layer of an array render target.
+  blit(rt, layer, texture) {
     const r = this.renderer;
     const prev = r.getRenderTarget();
     this.blitMat.map = texture;
     this.blitMat.needsUpdate = true;
-    r.setRenderTarget(this.colorRT, slot);
+    r.setRenderTarget(rt, layer);
     r.render(this.blitScene, this.blitCam);
     r.setRenderTarget(prev);
   }

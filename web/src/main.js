@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TileStreamer } from './tiles.js';
 import { ProjectorSystem, recency, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
-import { CAM_PROXY, CAM_REFRESH_MS } from './config.js';
+import { CAM_PROXY, CAM_REFRESH_MS, ASSET_BASE } from './config.js';
 import { buildLayer, layerAlpha } from './layers.js';
+import { OrthoCache } from './ortho.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view');
@@ -27,7 +28,8 @@ controls.maxDistance = 12000;
 controls.screenSpacePanning = false;
 
 const proj = new ProjectorSystem(renderer, scene, SKY);
-const tiles = new TileStreamer(scene, proj.materials);
+const ortho = new OrthoCache(renderer, proj);
+const tiles = new TileStreamer(scene, proj.materials, ASSET_BASE + 'tiles/');
 tiles.onChange = () => proj.invalidateDepth();
 
 // Water
@@ -60,9 +62,10 @@ function loadTexture(url) {
 function makePhoto(p) {
   const item = {
     kind: 'photo', ...p, aspect: p.w / p.h, rect: [0, 0, 1, 1],
+    img: ASSET_BASE + p.img, thumb: ASSET_BASE + p.thumb, depth: p.depth && ASSET_BASE + p.depth,
     pos: toThree(p.pose), fwd: forwardOf(p.pose),
     async load() {
-      this.tex = await loadTexture(p.img);
+      this.tex = await loadTexture(this.img);
       if (p.depth) {
         buildLayer(this, this.tex, { uFogColor: proj.uniforms.uFogColor, uFogDensity: proj.uniforms.uFogDensity })
           .then(m => { if (this.slot >= 0 && this.tex) { this.layer = m; scene.add(m); } else { m.geometry.dispose(); m.material.dispose(); } })
@@ -414,6 +417,7 @@ function frame() {
   if (schedT <= 0) {
     schedT = 0.5;
     tiles.update(focusPoint());
+    ortho.update(focusPoint());
     scheduleProjectors();
     if (state.mode === 'map') renderStrip(false);
     writeHash();
@@ -441,6 +445,7 @@ async function main() {
     fetch('data/photos.json').then(r => r.json()).catch(() => []),
     fetch('data/cams.json').then(r => r.json()).catch(() => []),
     tiles.init(),
+    ortho.init(ASSET_BASE + 'ortho/'),
   ]);
   state.photos = photos.map(makePhoto);
   state.cams = cams.map(makeCam);
@@ -454,6 +459,6 @@ async function main() {
   renderStrip(true);
 }
 
-window.cityviz = { state, proj, tiles, camera, renderer, controls, enterPhoto, exitPhoto };
+window.cityviz = { state, proj, tiles, ortho, camera, renderer, controls, enterPhoto, exitPhoto };
 requestAnimationFrame(frame);
 main();

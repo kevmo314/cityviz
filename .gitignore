@@ -2,3 +2,7 @@
 __pycache__/
 /data/
 *.log
+/web/photos/
+/web/depth/
+/web/ortho/
+/web/tiles/
