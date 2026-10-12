@@ -64,8 +64,13 @@ def layer(city, seg, p, pred):
     z = zp * s
     resid = float(np.median(np.abs(np.log(zm[fit] / z[fit]))))
     z = np.where(hit, np.minimum(z, zm * 0.995), z)  # never behind the modelled facade
+    # Keep only residual geometry: what stands in front of the model (trees, awnings, vehicles, fences) or where
+    # the model is empty (e.g. newer buildings). Surfaces the model already explains are painted, not layered.
+    z[hit & (np.abs(np.log(np.maximum(z, 1e-3) / zm)) < 0.05)] = 0
     z[lab == segment.SKY] = 0
     z[(z > ZMAX) | ~np.isfinite(z)] = 0
+    keep = cv2.morphologyEx((z > 0).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
+    z[~keep] = 0
     return z, dict(scale=s, resid=resid, coverage=float((z > 0).mean()))
 
 

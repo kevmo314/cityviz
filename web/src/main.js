@@ -3,6 +3,7 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TileStreamer } from './tiles.js';
 import { ProjectorSystem, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
 import { CAM_PROXY, CAM_REFRESH_MS } from './config.js';
+import { buildLayer, layerAlpha } from './layers.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view');
@@ -42,7 +43,7 @@ water.userData.noDepth = true;
 scene.add(water);
 
 // ---------------------------------------------------------------- data
-const state = { items: [], photos: [], cams: [], selected: null, mode: 'map', showPhotos: true, showCams: true };
+const state = { items: [], photos: [], cams: [], selected: null, mode: 'map', showPhotos: true, showCams: true, showLayers: true };
 const toThree = p => new THREE.Vector3(p[0], p[2], -p[1]);
 
 function forwardOf(pose) {
@@ -60,8 +61,19 @@ function makePhoto(p) {
   const item = {
     kind: 'photo', ...p, aspect: p.w / p.h, rect: [0, 0, 1, 1],
     pos: toThree(p.pose), fwd: forwardOf(p.pose),
-    async load() { this.tex = await loadTexture(p.img); return this.tex; },
-    unload() { this.tex?.dispose(); this.tex = null; },
+    async load() {
+      this.tex = await loadTexture(p.img);
+      if (p.depth) {
+        buildLayer(this, this.tex, { uFogColor: proj.uniforms.uFogColor, uFogDensity: proj.uniforms.uFogDensity })
+          .then(m => { if (this.slot >= 0 && this.tex) { this.layer = m; scene.add(m); } else { m.geometry.dispose(); m.material.dispose(); } })
+          .catch(() => {});
+      }
+      return this.tex;
+    },
+    unload() {
+      if (this.layer) { scene.remove(this.layer); this.layer.geometry.dispose(); this.layer.material.dispose(); this.layer = null; }
+      this.tex?.dispose(); this.tex = null;
+    },
   };
   item.look = item.pos.clone().addScaledVector(item.fwd, 40);
   return item;
@@ -337,6 +349,7 @@ $('pPrev').onclick = () => step(-1);
 $('pOpacity').oninput = e => { if (state.mode === 'photo') overlay.style.opacity = e.target.value; };
 $('tPhotos').onchange = e => { state.showPhotos = e.target.checked; renderStrip(true); };
 $('tCams').onchange = e => { state.showCams = e.target.checked; renderStrip(true); };
+$('tLayers').onchange = e => { state.showLayers = e.target.checked; };
 $('tMarkers').onchange = e => { if (markers) markers.visible = e.target.checked; };
 
 function resize() {
@@ -408,6 +421,14 @@ function frame() {
   const now = performance.now();
   for (const s of proj.slots) if (s?.kind === 'cam' && s.ready && now - s.lastFrame > CAM_REFRESH_MS) s.refresh();
   proj.update(dt, weightOf);
+  for (const s of proj.slots) {
+    if (!s?.layer) continue;
+    const target = !state.showLayers || !state.showPhotos ? 0
+      : state.mode !== 'map' && state.selected === s ? 1 : state.mode === 'map' ? layerAlpha(s, camera) : 0;
+    const u = s.layer.material.uniforms.uAlpha;
+    u.value += (target - u.value) * Math.min(1, dt * 4);
+    s.layer.visible = u.value > 0.01;
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

@@ -82,6 +82,9 @@ def main():
             "K": [round(v, 5) for v in r["theta"][6:9]], "edge_px": round(r["edge_med_px"], 2), "artist": m.get("artist", "")[:120], "license": m.get("license"),
             "license_url": m.get("license_url"), "date": m.get("date"),
         })
+    for p in photos:
+        if (WEB / f"depth/{p['id']}.bin").exists():
+            p["depth"] = f"depth/{p['id']}.bin"
     photos.sort(key=lambda p: p["id"])
     (WEB / "data/photos.json").write_text(json.dumps(photos, separators=(",", ":")))
 
