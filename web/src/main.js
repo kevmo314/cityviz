@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TileStreamer } from './tiles.js';
-import { ProjectorSystem, poseCamera } from './projectors.js';
+import { ProjectorSystem, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
 import { CAM_PROXY, CAM_REFRESH_MS } from './config.js';
 
 const $ = id => document.getElementById(id);
@@ -116,9 +116,10 @@ frustum.visible = false;
 scene.add(frustum);
 function showFrustum(item) {
   if (!item) { frustum.visible = false; return; }
-  const c = poseCamera(item.pose, item.aspect, new THREE.PerspectiveCamera());
-  const d = 25, th = Math.tan(THREE.MathUtils.degToRad(c.fov / 2)) * d, tw = th * item.aspect;
-  const corners = [[-tw, -th], [tw, -th], [tw, th], [-tw, th]].map(([x, y]) => new THREE.Vector3(x, y, -d).applyMatrix4(c.matrixWorld));
+  const c = poseCamera(item);
+  const d = 25, fr = imageFrustum(item);
+  const corners = [[fr.l, fr.b], [fr.r, fr.b], [fr.r, fr.t], [fr.l, fr.t]]
+    .map(([x, y]) => new THREE.Vector3(x * d, y * d, -d).applyMatrix4(c.matrixWorld));
   const o = c.position;
   const pts = [];
   corners.forEach((p, i) => { pts.push(o, p, p, corners[(i + 1) % 4]); });
@@ -173,19 +174,24 @@ function weightOf(it) {
 }
 
 // ---------------------------------------------------------------- photo mode
+function applyFrustum(fr) {
+  camera.userData.frustum = fr;
+  setFrustum(camera, fr, 1, 30000);
+}
+
 const overlay = $('overlay');
 let anim = null;
 
+// Window frustum that shows the image letterboxed in the center of the viewport, with its exact intrinsics.
 function viewParams(item) {
   const A = innerWidth / innerHeight;
-  const c = poseCamera(item.pose, item.aspect, new THREE.PerspectiveCamera());
-  let fov, w, h;
-  if (A > item.aspect) { fov = c.fov; h = innerHeight; w = h * item.aspect; }
-  else {
-    const hfov = THREE.MathUtils.degToRad(item.pose[6]);
-    fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(hfov / 2) / A)); w = innerWidth; h = w / item.aspect;
-  }
-  return { c, fov, w, h };
+  const c = orientCamera(item.pose, new THREE.PerspectiveCamera());
+  const fr = imageFrustum(item);
+  const w = A > item.aspect ? innerHeight * item.aspect : innerWidth;
+  const h = w / item.aspect;
+  const sx = innerWidth / w, sy = innerHeight / h;
+  const mx = (fr.l + fr.r) / 2, my = (fr.t + fr.b) / 2, hx = (fr.r - fr.l) / 2 * sx, hy = (fr.t - fr.b) / 2 * sy;
+  return { c, frustum: { l: mx - hx, r: mx + hx, t: my + hy, b: my - hy }, w, h };
 }
 
 function placeOverlay(item) {
@@ -199,11 +205,11 @@ function enterPhoto(item) {
   controls.enabled = false;
   overlay.style.opacity = 0;
   scheduleProjectors();
-  const { c, fov } = viewParams(item);
+  const { c, frustum } = viewParams(item);
   anim = {
     t: 0, dur: Math.min(2.6, 0.9 + camera.position.distanceTo(c.position) / 1500),
-    p0: camera.position.clone(), q0: camera.quaternion.clone(), f0: camera.fov,
-    p1: c.position.clone(), q1: c.quaternion.clone(), f1: fov,
+    p0: camera.position.clone(), q0: camera.quaternion.clone(), f0: state.mode === 'photo' && camera.userData.frustum || cameraFrustum(camera),
+    p1: c.position.clone(), q1: c.quaternion.clone(), f1: frustum,
     lift: Math.min(300, camera.position.distanceTo(c.position) * 0.25),
   };
   showFrustum(null);
@@ -232,6 +238,8 @@ function exitPhoto() {
   if (tgt.y < 0) tgt.y = 0;
   controls.target.copy(tgt);
   camera.fov = 55;
+  camera.near = 1; camera.far = 30000;
+  camera.userData.frustum = null;
   camera.updateProjectionMatrix();
   controls.enabled = true;
   renderStrip(true);
@@ -334,8 +342,8 @@ $('tMarkers').onchange = e => { if (markers) markers.visible = e.target.checked;
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
   camera.aspect = innerWidth / innerHeight;
-  if (state.mode === 'photo' && state.selected) { camera.fov = viewParams(state.selected).fov; placeOverlay(state.selected); }
   camera.updateProjectionMatrix();
+  if (state.mode === 'photo' && state.selected) { applyFrustum(viewParams(state.selected).frustum); placeOverlay(state.selected); }
 }
 addEventListener('resize', resize);
 resize();
@@ -381,8 +389,8 @@ function frame() {
     camera.position.lerpVectors(anim.p0, anim.p1, e);
     camera.position.y += Math.sin(Math.PI * e) * anim.lift;
     camera.quaternion.slerpQuaternions(anim.q0, anim.q1, e);
-    camera.fov = anim.f0 + (anim.f1 - anim.f0) * e;
-    camera.updateProjectionMatrix();
+    const L = k => anim.f0[k] + (anim.f1[k] - anim.f0[k]) * e;
+    applyFrustum({ l: L('l'), r: L('r'), t: L('t'), b: L('b') });
     if (k >= 1) { const it = state.selected; anim = null; arrive(it); }
   } else if (state.mode === 'map') {
     controls.update();

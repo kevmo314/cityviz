@@ -6,9 +6,36 @@ export const SLOTS = 16;
 const COLOR_RES = 1024;
 const DEPTH_RES = 512;
 
-// pose = [x, y, z, yaw, pitch, roll, hfov] in the pipeline frame (x east, y north, z up; yaw clockwise from north).
-export function poseCamera(pose, aspect, cam = new THREE.PerspectiveCamera()) {
-  const [x, y, z, yawD, pitchD, rollD, hfovD] = pose;
+// Camera model (mirrors pipeline/camera.py):
+//   pose = [x, y, z, yaw, pitch, roll] in the pipeline frame (x east, y north, z up; yaw clockwise from north)
+//   K = [f, cx, cy]: focal length and principal-point offset from the image center, in units of image width (y down)
+// Legacy 7-element poses carry a horizontal FOV instead of K.
+export function intrinsics(item) {
+  if (item.K) return item.K;
+  const hfov = THREE.MathUtils.degToRad(item.pose[6]);
+  return [0.5 / Math.tan(hfov / 2), 0, 0];
+}
+
+// Frustum of the image as tangent extents {l, r, t, b} at unit depth.
+export function imageFrustum(item) {
+  const [f, cx, cy] = intrinsics(item);
+  const a = item.aspect;
+  return { l: (-0.5 - cx) / f, r: (0.5 - cx) / f, t: (0.5 / a + cy) / f, b: (-0.5 / a + cy) / f };
+}
+
+export function setFrustum(cam, fr, near = 0.5, far = 6000) {
+  cam.near = near; cam.far = far;
+  cam.projectionMatrix.makePerspective(fr.l * near, fr.r * near, fr.t * near, fr.b * near, near, far);
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+}
+
+export function cameraFrustum(cam) {
+  const t = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+  return { l: -t * cam.aspect, r: t * cam.aspect, t, b: -t };
+}
+
+export function orientCamera(pose, cam) {
+  const [x, y, z, yawD, pitchD, rollD] = pose;
   const yaw = THREE.MathUtils.degToRad(yawD), p = THREE.MathUtils.degToRad(pitchD), r = THREE.MathUtils.degToRad(rollD);
   // pipeline-frame basis -> three frame (X=x, Y=z, Z=-y)
   const T = v => new THREE.Vector3(v[0], v[2], -v[1]);
@@ -19,11 +46,13 @@ export function poseCamera(pose, aspect, cam = new THREE.PerspectiveCamera()) {
   cam.position.copy(T([x, y, z]));
   cam.up.copy(T(ru));
   cam.lookAt(cam.position.clone().add(T(f)));
-  const hfov = THREE.MathUtils.degToRad(hfovD);
-  cam.aspect = aspect;
-  cam.fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(hfov / 2) / aspect));
   cam.updateMatrixWorld(true);
-  cam.updateProjectionMatrix();
+  return cam;
+}
+
+export function poseCamera(item, cam = new THREE.PerspectiveCamera()) {
+  orientCamera(item.pose, cam);
+  setFrustum(cam, imageFrustum(item));
   return cam;
 }
 
@@ -46,6 +75,7 @@ const frag = /* glsl */`
   uniform vec3 uPos[${SLOTS}];
   uniform vec4 uRect[${SLOTS}];
   uniform float uW[${SLOTS}];
+  uniform vec2 uDist[${SLOTS}]; // (k1, image aspect W/H): radial distortion applied when sampling raw frames
   uniform float uPaint;
   uniform float uTerrain;
   uniform vec3 uFogColor;
@@ -66,6 +96,17 @@ const frag = /* glsl */`
       vec2 ndc = c.xy / c.w;
       if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) continue;
       vec2 uv = ndc * 0.5 + 0.5;
+      vec2 dk = uDist[i];
+      if (dk.x != 0.0) {
+        // ideal (pinhole) -> raw distorted image coords, division model about the image center
+        vec2 p = vec2(uv.x - 0.5, (0.5 - uv.y) / dk.y);
+        float ru = length(p);
+        if (ru > 1e-6) {
+          float rd = (1.0 - sqrt(max(1.0 - 4.0 * dk.x * ru * ru, 0.0))) / (2.0 * dk.x * ru);
+          p *= rd / ru;
+        }
+        uv = vec2(p.x + 0.5, 0.5 - p.y * dk.y);
+      }
       vec4 rc = uRect[i];
       if (uv.x < rc.x || uv.y < rc.y || uv.x > rc.z || uv.y > rc.w) continue;
       vec3 d = vWorld - uPos[i];
@@ -113,6 +154,7 @@ export class ProjectorSystem {
       uPos: { value: Array.from({ length: SLOTS }, () => new THREE.Vector3()) },
       uRect: { value: Array.from({ length: SLOTS }, () => new THREE.Vector4(0, 0, 1, 1)) },
       uW: { value: new Array(SLOTS).fill(0) },
+      uDist: { value: Array.from({ length: SLOTS }, () => new THREE.Vector2(0, 1)) },
       uPaint: { value: 1 },
       uFogColor: { value: fogColor },
       uFogDensity: { value: 0.00012 },
@@ -148,7 +190,7 @@ export class ProjectorSystem {
     const item = this.slots[slot];
     if (!item) return;
     const r = this.renderer;
-    const cam = poseCamera(item.pose, item.aspect, this.cam);
+    const cam = poseCamera(item, this.cam);
     this.depthMat.uniforms.uEye.value.copy(cam.position);
     const prev = r.getRenderTarget();
     const prevClear = r.getClearColor(new THREE.Color()), prevAlpha = r.getClearAlpha();
@@ -173,6 +215,7 @@ export class ProjectorSystem {
     u.uPos.value[slot].copy(cam.position);
     const rc = item.rect || [0, 0, 1, 1];
     u.uRect.value[slot].set(rc[0], rc[1], rc[2], rc[3]);
+    u.uDist.value[slot].set(item.k1 || 0, item.aspect);
   }
 
   invalidateDepth() {

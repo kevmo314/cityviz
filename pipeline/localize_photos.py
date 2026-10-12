@@ -82,7 +82,7 @@ def fetch(url):
 
 
 def solve(rec):
-    import localize, segment
+    import segment, solver
     city, seg = _W["city"], _W["seg"]
     out = {"pageid": rec["pageid"], "title": rec["title"]}
     t0 = time.time()
@@ -91,43 +91,35 @@ def solve(rec):
     except Exception as e:
         return {**out, "status": f"download: {e}"}
     lab = seg.labels(img)
-    n = lab.size
-    frac = {k: float((lab == v).sum() / n) for k, v in (("sky", segment.SKY), ("ground", segment.GROUND), ("building", segment.BUILDING))}
+    frac = {k: float((lab == v).mean()) for k, v in (("sky", segment.SKY), ("ground", segment.GROUND), ("building", segment.BUILDING))}
     out["frac"] = frac
-    if frac["sky"] < 0.02 or frac["building"] < 0.12 or frac["sky"] + frac["building"] + frac["ground"] < 0.45:
+    if frac["sky"] < 0.02 or frac["building"] < 0.12 or sum(frac.values()) < 0.45:
         return {**out, "status": "unsuitable"}
 
     x, y = map(float, geo.to_local(rec["lon"], rec["lat"]))
     g = city.ground(x, y)
     W, H = img.size
-    fov0 = localize.fov_from_exif(rec, W, H)
-    fovs = [fov0 * k for k in (0.93, 1.0, 1.07)] if fov0 else [30, 40, 50, 60, 70]
-    h0 = geo.true_heading_to_grid(rec["heading"])
-    L = localize.Localizer(city, lab)
-    heights = [g + 1.6]
+    f35 = rec.get("focal35")
+    # EXIF is only a weak prior: crops and edits make it unreliable.
+    fexif = (np.hypot(W, H) * f35 / 43.27) / W if f35 and 8 < f35 < 400 else None
+    prior = solver.Prior(x=x, y=y, ground=g, f=fexif,
+                         heading=geo.true_heading_to_grid(rec["heading"]) if rec.get("heading") is not None else None)
     # Camera inside a footprint: likely an elevated vantage point (observation deck, roof, window).
     prim, t, hit = city.cast(np.array([[x, y, 2000.0]]), np.array([[0, 0, -1.0]]))
     if hit[0] and city.label[prim[0]] == 3 and 2000 - t[0] > g + 10:
-        roof = 2000 - t[0]
-        heights = [roof + 1.6, g + 0.9 * (roof - g), g + 0.8 * (roof - g)]
-    pos = [(x + dx, y + dy, z) for z in heights for dx in (-15, 0, 15) for dy in (-15, 0, 15)]
-    cands = L.coarse(pos, np.arange(h0 - 30, h0 + 30.1, 1.0), np.arange(-15, 36, 2.5), fovs)
-    if not cands:
+        rel = 2000 - t[0] - g
+        prior.heights = [rel + 1.6, 0.9 * rel, 0.8 * rel]
+        prior.z_range = (0.7 * rel, rel + 4)
+        prior.pitch_range = (-70.0, 40.0)
+    obs = solver.Observation(img, lab)
+    res = solver.Solver(city, obs, prior).solve()
+    if res is None:
         return {**out, "status": "no-candidates"}
-    best = None
-    for s, p in cands[:4]:
-        zlo, zhi = (g + 0.5, g + 6) if p[2] < g + 5 else (p[2] - 20, p[2] + 10)
-        b = [(p[0] - 25, p[0] + 25), (p[1] - 25, p[1] + 25), (zlo, zhi), (p[3] - 12, p[3] + 12), (-35, 60), (-8, 8),
-             (fovs[0] * 0.85, fovs[-1] * 1.15)]
-        r = L.refine(np.array(p), b)
-        if best is None or r[0] > best[0]:
-            best = r
-    # ambiguity: best coarse candidate that differs substantially in yaw or position
-    alt = [s for s, p in cands if abs(((p[3] - best[1][3] + 180) % 360) - 180) > 8 or np.hypot(p[0] - best[1][0], p[1] - best[1][1]) > 12]
+    theta, J, parts = res
     IMGDIR.mkdir(parents=True, exist_ok=True)
     img.save(IMGDIR / f"{rec['pageid']}.jpg", quality=90)
-    return {**out, "status": "ok", "score": best[0], "pose": [round(v, 3) for v in best[1]], "alt": alt[0] if alt else None,
-            "coarse": cands[0][0], "w": W, "h": H, "fov_exif": fov0, "secs": round(time.time() - t0, 1)}
+    return {**out, "status": "ok", "theta": [round(float(v), 5) for v in theta], "J": float(J), **parts,
+            "w": W, "h": H, "f_exif": fexif, "secs": round(time.time() - t0, 1)}
 
 
 def main(limit=int(sys.argv[1]) if len(sys.argv) > 1 else 2000, workers=int(os.environ.get("WORKERS", "4"))):
@@ -138,9 +130,9 @@ def main(limit=int(sys.argv[1]) if len(sys.argv) > 1 else 2000, workers=int(os.e
     with Pool(workers, initializer=init_worker) as pool, open(RESULTS, "a") as f:
         for i, r in enumerate(pool.imap_unordered(solve, todo)):
             f.write(json.dumps(r) + "\n"); f.flush()
-            ok += r.get("status") == "ok" and r["score"] > 0.85
+            ok += r.get("status") == "ok" and (r.get("edge_med_px") or 99) < 4
             if i % 10 == 0:
-                print(f"{i}/{len(todo)} good={ok} last={r.get('status')} {r.get('score')}", file=sys.stderr, flush=True)
+                print(f"{i}/{len(todo)} good={ok} last={r.get('status')} {r.get('edge_med_px')}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
