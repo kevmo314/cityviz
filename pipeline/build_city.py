@@ -114,17 +114,62 @@ def extrude(mb, poly, z0, z1):
     mb.add(verts, idx)
 
 
+def load_lod2():
+    """BIN -> {tiles: {tile_key: (verts, faces)}, cx, cy, top} from parsed CityGML (ground surfaces dropped)."""
+    out = {}
+    for fn in sorted((WORK / "lod2").glob("DA*.npz")):
+        d = np.load(fn)
+        v, f, kind, bins = d["v"].astype(np.float64), d["f"], d["kind"], d["bin"]
+        keep = kind != 0
+        f, bins = f[keep], bins[keep]
+        order = np.argsort(bins, kind="stable")
+        f, bins = f[order], bins[order]
+        split = np.flatnonzero(np.diff(bins)) + 1
+        for bb, ff in zip(np.split(bins, split), np.split(f, split)):
+            b = int(bb[0])
+            if b <= 0 or b in out:
+                continue
+            tri = v[ff]
+            cen = tri.mean(1)
+            keys = np.floor(cen[:, :2] / TILE).astype(np.int64)
+            tl = {}
+            for k in {tuple(x) for x in keys}:
+                m = (keys[:, 0] == k[0]) & (keys[:, 1] == k[1])
+                used, inv = np.unique(ff[m], return_inverse=True)
+                tl[(int(k[0]), int(k[1]))] = (v[used], inv.reshape(-1, 3))
+            out[b] = {"tiles": tl, "cx": float(cen[:, 0].mean()), "cy": float(cen[:, 1].mean()),
+                      "top": float(tri[:, :, 2].max()), "bottom": float(tri[:, :, 2].min())}
+    return out
+
+
+def lod2_matches(b, polys, h):
+    """Same building still standing: centroid within 5 m and roof height within 20% (or 4 m)."""
+    if b["cx"] is None or h <= 2:
+        return False
+    c = polys[0].centroid
+    if np.hypot(b["cx"] - c.x, b["cy"] - c.y) > 5 + 0.2 * np.sqrt(polys[0].area):
+        return False
+    h2 = b["top"] - b["bottom"]
+    return abs(h2 - h) <= max(4.0, 0.2 * h)
+
+
 def write_tile(path, verts, idx):
     origin = np.floor(verts.min(0))
     scale = max(SCALE, float(np.ceil((verts - origin).max() / 32000 * 100) / 100))
     q = np.round((verts - origin) / scale).astype(np.int16)
+    # weld duplicate vertices (CityGML polygons each carry their own copies)
+    q, inv = np.unique(q, axis=0, return_inverse=True)
+    idx = inv.reshape(-1)[idx]
+    idx = idx[(idx[:, 0] != idx[:, 1]) & (idx[:, 1] != idx[:, 2]) & (idx[:, 0] != idx[:, 2])]
     with open(path, "wb") as f:
-        f.write(b"CVT1" + struct.pack("<II4f", len(verts), len(idx) * 3, *origin, scale))
+        f.write(b"CVT1" + struct.pack("<II4f", len(q), len(idx) * 3, *origin, scale))
         f.write(q.tobytes())
         f.write(idx.astype(np.uint32).tobytes())
 
 
 def main():
+    import shutil
+    shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir(parents=True, exist_ok=True)
     WORK.mkdir(parents=True, exist_ok=True)
     feats = json.loads((RAW / "buildings_manhattan.geojson").read_text())["features"]
@@ -144,7 +189,7 @@ def main():
         if 0 < ge < 100:
             c = polys[0].centroid
             gpts.append((c.x, c.y)); gz.append(ge)
-        blds.append((polys, ge, h))
+        blds.append((polys, ge, h, int(p.get("bin") or 0)))
     gpts, gz = np.array(gpts), np.array(gz)
 
     # --- land polygons (Manhattan + neighbors) in local frame
@@ -183,16 +228,32 @@ def main():
     tiles = defaultdict(MeshBuilder)
     lod1 = defaultdict(MeshBuilder)
     full = MeshBuilder()
-    for polys, ge, h in blds:
+    lod2 = load_lod2()
+    n_lod2 = 0
+    for polys, ge, h, bin_ in blds:
+        use2 = lod2.get(bin_)
+        if use2 is not None and lod2_matches(use2, polys, h):
+            for k, (vv, ff) in use2["tiles"].items():
+                tiles[k].add(vv, ff)
+            use2["used"] = True
+            n_lod2 += 1
         for poly in polys:
             c = poly.centroid
             g0 = float(ground(c.x, c.y))
             hh = h if h > 2 else 6.0
             key = (int(np.floor(c.x / TILE)), int(np.floor(c.y / TILE)))
-            extrude(tiles[key], poly, g0 - 2.0, g0 + hh)
+            if not (use2 is not None and use2.get("used")):
+                extrude(tiles[key], poly, g0 - 2.0, g0 + hh)
             if hh >= 25:
                 big = poly.simplify(1.5, preserve_topology=True)
                 extrude(lod1[(key[0] // 4, key[1] // 4)], big, g0 - 2.0, g0 + hh)
+
+    # Outside Manhattan we have no current footprints, so LOD2 is used as-is (BIN borough prefix != 1).
+    for bin_, b in lod2.items():
+        if bin_ // 1000000 != 1 and bin_ % 1000000 != 0:
+            for k, (vv, ff) in b["tiles"].items():
+                tiles[k].add(vv, ff)
+    print(f"LOD2 used for {n_lod2} Manhattan buildings; extruded footprints elsewhere")
 
     # --- terrain: land clipped to 50 m cells, triangulated, z from heightfield
     terrain = defaultdict(MeshBuilder)
