@@ -13,7 +13,7 @@ import geo
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data/raw"
-RESULTS = ROOT / "data/work/photo_poses.jsonl"
+RESULTS = Path(os.environ.get("RESULTS", ROOT / "data/work/photo_poses.jsonl"))
 IMGDIR = ROOT / "data/work/photos"
 UA = "cityviz/0.1 (https://github.com/kevmo314/cityviz; kevmo314@gmail.com)"
 
@@ -123,7 +123,16 @@ def solve(rec):
 
 
 def main(limit=int(sys.argv[1]) if len(sys.argv) > 1 else 2000, workers=int(os.environ.get("WORKERS", "4"))):
-    todo = candidates(limit)
+    if os.environ.get("CANDIDATES"):
+        # Pre-built candidate list, optionally sharded across machines with SHARD=i/n.
+        todo = [json.loads(l) for l in open(os.environ["CANDIDATES"])]
+        i, n = map(int, os.environ.get("SHARD", "0/1").split("/"))
+        todo = todo[i::n]
+        if RESULTS.exists():
+            done = {json.loads(l)["pageid"] for l in open(RESULTS)}
+            todo = [r for r in todo if r["pageid"] not in done]
+    else:
+        todo = candidates(limit)
     print(f"{len(todo)} candidates", file=sys.stderr, flush=True)
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
     ok = 0

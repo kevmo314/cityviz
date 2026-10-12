@@ -1,4 +1,6 @@
 """Semantic segmentation (SegFormer ADE20k) collapsed to sky / ground / building / ignore."""
+import os
+
 import numpy as np
 import torch
 from PIL import Image
@@ -23,7 +25,8 @@ class Segmenter:
         if threads:
             torch.set_num_threads(threads)
         self.proc = SegformerImageProcessor.from_pretrained(MODEL)
-        self.model = SegformerForSemanticSegmentation.from_pretrained(MODEL).eval()
+        self.device = torch.device(os.environ.get("SEG_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.model = SegformerForSemanticSegmentation.from_pretrained(MODEL).eval().to(self.device)
 
     @torch.no_grad()
     def probs(self, img: Image.Image, size=512):
@@ -31,10 +34,10 @@ class Segmenter:
         w, h = img.size
         s = size / max(w, h)
         img = img.convert("RGB").resize((max(1, round(w * s)), max(1, round(h * s))), Image.BILINEAR)
-        x = self.proc(images=img, return_tensors="pt", do_resize=False)
+        x = self.proc(images=img, return_tensors="pt", do_resize=False).to(self.device)
         logits = self.model(**x).logits
         logits = torch.nn.functional.interpolate(logits, size=(img.height, img.width), mode="bilinear", align_corners=False)
-        return logits.softmax(1)[0].numpy()
+        return logits.softmax(1)[0].cpu().numpy()
 
     def labels(self, img, size=512):
         return collapse(self.probs(img, size).argmax(0))
