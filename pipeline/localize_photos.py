@@ -61,7 +61,20 @@ def candidates(limit, per_cell=6, cell=75.0):
 _W = {}
 
 
+def pin_worker():
+    """Pin this pool worker to its own cores (CORES_PER_WORKER, starting at CORE_OFFSET).
+    Embree's TBB pool sizes itself from the affinity mask, so this also caps ray-casting threads."""
+    import multiprocessing
+    per = int(os.environ.get("CORES_PER_WORKER", "0"))
+    if not per or not hasattr(os, "sched_setaffinity"):
+        return
+    k = (multiprocessing.current_process()._identity or (1,))[0] - 1
+    start = int(os.environ.get("CORE_OFFSET", "0")) + k * per
+    os.sched_setaffinity(0, set(range(start, start + per)))
+
+
 def init_worker():
+    pin_worker()
     import torch
     torch.set_num_threads(int(os.environ.get("SEG_THREADS", "3")))
     import render, segment
