@@ -6,7 +6,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "data/work"
 WEB = ROOT / "web"
-PHOTO_MIN = float(sys.argv[1]) if len(sys.argv) > 1 else 0.88
+PHOTO_MIN = float(sys.argv[1]) if len(sys.argv) > 1 else 0.90
 CAM_MIN = float(sys.argv[2]) if len(sys.argv) > 2 else 0.80
 
 
@@ -26,6 +26,13 @@ def accepted_photos():
     return [(r, meta[pid]) for pid, r in best.items() if pid in meta]
 
 
+def is_dark(path):
+    im = Image.open(path).convert("L")
+    im.thumbnail((128, 128))
+    import numpy as np
+    return float(np.asarray(im).mean()) < 70
+
+
 def main():
     (WEB / "photos/t").mkdir(parents=True, exist_ok=True)
     (WEB / "data").mkdir(parents=True, exist_ok=True)
@@ -34,6 +41,8 @@ def main():
         src = WORK / f"photos/{r['pageid']}.jpg"
         if not src.exists():
             continue
+        if is_dark(src):
+            continue  # night shots segment poorly and paint the city black
         dst, th = WEB / f"photos/{r['pageid']}.jpg", WEB / f"photos/t/{r['pageid']}.jpg"
         if not dst.exists():
             im = Image.open(src).convert("RGB")
