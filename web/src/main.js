@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TileStreamer } from './tiles.js';
-import { ProjectorSystem, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
+import { ProjectorSystem, recency, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
 import { CAM_PROXY, CAM_REFRESH_MS } from './config.js';
 import { buildLayer, layerAlpha } from './layers.js';
 
@@ -166,8 +166,10 @@ function focusPoint() {
 function scheduleProjectors() {
   const f = focusPoint();
   const cand = state.items.filter(it => visibleKind(it) && it.look.distanceTo(f) < 900);
-  cand.sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));
-  // Keep a mix: up to 10 photos and 6 cams nearest the focus.
+  // nearest first, with newer imagery counting as closer (an image 3 years older ranks like one ~1.4x farther)
+  const score = it => it.look.distanceToSquared(f) / (0.5 + recency(it));
+  cand.sort((a, b) => score(a) - score(b));
+  // Keep a mix: up to 10 photos and 6 cams, preferring near and recent.
   const photos = cand.filter(c => c.kind === 'photo').slice(0, 10);
   const cams = cand.filter(c => c.kind === 'cam').slice(0, 6);
   const wanted = [...photos, ...cams].sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));

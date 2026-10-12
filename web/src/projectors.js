@@ -75,6 +75,7 @@ const frag = /* glsl */`
   uniform vec3 uPos[${SLOTS}];
   uniform vec4 uRect[${SLOTS}];
   uniform float uW[${SLOTS}];
+  uniform float uR[${SLOTS}]; // recency: relative blend weight among overlapping projectors (newer wins)
   uniform vec2 uDist[${SLOTS}]; // (k1, image aspect W/H): radial distortion applied when sampling raw frames
   uniform float uPaint;
   uniform float uTerrain;
@@ -91,6 +92,7 @@ const frag = /* glsl */`
     vec3 base = uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
       : (abs(n.y) > 0.7 ? vec3(0.82, 0.82, 0.84) : vec3(0.72, 0.73, 0.76)) * diff * lift;
     vec4 acc = vec4(0.0);
+    float cover = 0.0;
     for (int i = 0; i < ${SLOTS}; i++) {
       if (uW[i] <= 0.0) continue;
       vec4 c = uVP[i] * vec4(vWorld, 1.0);
@@ -120,10 +122,12 @@ const frag = /* glsl */`
       vec2 e = min(uv - rc.xy, rc.zw - uv) / (rc.zw - rc.xy);
       float edge = smoothstep(0.0, 0.08, min(e.x, e.y));
       float w = uW[i] * edge * smoothstep(0.03, 0.3, facing) / (1.0 + dist / 120.0);
-      acc += vec4(texture(uPhotos, vec3(uv, float(i))).rgb * w, w);
+      acc += vec4(texture(uPhotos, vec3(uv, float(i))).rgb, 1.0) * (w * uR[i]);
+      cover += w;
     }
     vec3 col = base;
-    if (acc.w > 0.0) col = mix(base, acc.rgb / acc.w, clamp(acc.w * 6.0, 0.0, 1.0) * uPaint);
+    // recency only re-weights overlapping projectors; coverage (how strongly paint replaces the base) does not fade with age
+    if (acc.w > 0.0) col = mix(base, acc.rgb / acc.w, clamp(cover * 6.0, 0.0, 1.0) * uPaint);
     float fog = 1.0 - exp(-pow(uFogDensity * vFog, 2.0));
     gl_FragColor = vec4(mix(col, uFogColor, fog), 1.0);
   }`;
@@ -135,6 +139,16 @@ const depthFrag = /* glsl */`
   uniform vec3 uEye;
   varying vec3 vWorld;
   void main() { gl_FragColor = vec4(length(vWorld - uEye), 0.0, 0.0, 1.0); }`;
+
+// Newer imagery dominates where projectors overlap: weight halves for every RECENCY_HALF_LIFE years of age.
+// Live cameras are "now"; undated photos are treated as UNDATED_YEAR.
+const RECENCY_HALF_LIFE = 3, UNDATED_YEAR = 2015;
+const NOW = new Date().getFullYear() + new Date().getMonth() / 12;
+export function recency(item) {
+  if (item.kind === 'cam') return 1;
+  const age = Math.max(0, NOW - (item.year ?? UNDATED_YEAR));
+  return Math.pow(0.5, age / RECENCY_HALF_LIFE);
+}
 
 export class ProjectorSystem {
   constructor(renderer, scene, fogColor) {
@@ -156,6 +170,7 @@ export class ProjectorSystem {
       uPos: { value: Array.from({ length: SLOTS }, () => new THREE.Vector3()) },
       uRect: { value: Array.from({ length: SLOTS }, () => new THREE.Vector4(0, 0, 1, 1)) },
       uW: { value: new Array(SLOTS).fill(0) },
+      uR: { value: new Array(SLOTS).fill(1) },
       uDist: { value: Array.from({ length: SLOTS }, () => new THREE.Vector2(0, 1)) },
       uPaint: { value: 1 },
       uFogColor: { value: fogColor },
@@ -238,6 +253,7 @@ export class ProjectorSystem {
       if (free < 0) break;
       this.slots[free] = item;
       this.fade[free] = 0;
+      this.uniforms.uR.value[free] = recency(item);
       item.slot = free;
       item.ready = false;
       item.load().then(tex => {

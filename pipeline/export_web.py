@@ -1,5 +1,5 @@
 """Export accepted photo / camera poses and imagery into web/."""
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 import cv2
@@ -34,6 +34,22 @@ def accepted_photos():
             continue  # ambiguous: another distinct pose explains the image about as well
         best[r["pageid"]] = r
     return [(r, meta[pid]) for pid, r in best.items() if pid in meta]
+
+
+MONTHS = {m: i + 1 for i, m in enumerate("jan feb mar apr may jun jul aug sep oct nov dec".split())}
+
+
+def capture_year(date):
+    """Decimal capture year from Commons' free-text date ('2022-04-16 12:58', 'Taken on 2 March 2011', ...)."""
+    s = str(date or "").lower()
+    m = re.search(r"\b(19[5-9]\d|20[0-3]\d)-(\d\d)(?:-(\d\d))?", s)
+    if m:
+        return round(int(m[1]) + (int(m[2]) - 1 + (int(m[3] or 15) - 1) / 31) / 12, 2)
+    y = re.search(r"\b(19[5-9]\d|20[0-3]\d)\b", s)
+    if not y:
+        return None
+    mo = re.search(r"\b(" + "|".join(MONTHS) + r")[a-z]*\b", s)
+    return round(int(y[1]) + ((MONTHS[mo[1]] - 0.5) / 12 if mo else 0.5), 2)
 
 
 def banner_frac(path, lo=0.085):
@@ -92,6 +108,7 @@ def main():
             "thumb": f"photos/t/{r['pageid']}.jpg", "w": im.width, "h": im.height, "pose": [round(v, 3) for v in r["theta"][:6]],
             "K": [round(v, 5) for v in r["theta"][6:9]], "edge_px": round(r["edge_med_px"], 2), "artist": m.get("artist", "")[:120], "license": m.get("license"),
             "license_url": m.get("license_url"), "date": m.get("date"),
+            "year": capture_year(m.get("date")),
         })
     for p in photos:
         if (WEB / f"depth/{p['id']}.bin").exists():
