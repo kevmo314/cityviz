@@ -1,0 +1,7 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "cloud/Dockerfile", "-t", "us-east4-docker.pkg.dev/$PROJECT_ID/cityviz/pipeline:latest", "."]
+images: ["us-east4-docker.pkg.dev/$PROJECT_ID/cityviz/pipeline:latest"]
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 3600s

@@ -1,0 +1,12 @@
+/*
+!/pipeline/
+/pipeline/*
+!/pipeline/*.py
+!/data/
+/data/*
+!/data/work/
+/data/work/*
+!/data/work/city_mesh.npz
+!/data/work/heightfield.npz
+!/data/work/candidates.jsonl
+!/cloud/

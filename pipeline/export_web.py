@@ -22,7 +22,8 @@ def accepted_photos():
         r = json.loads(l)
         meta[r["pageid"]] = r
     best = {}
-    for l in open(WORK / "photo_poses.jsonl"):
+    sources = [WORK / "photo_poses.jsonl", *sorted(WORK.glob("cloud/*/results/*.jsonl"))]
+    for l in (l for src in sources if src.exists() for l in open(src)):
         r = json.loads(l)
         if r.get("status") != "ok" or r.get("edge_med_px") is None:
             continue
@@ -60,8 +61,9 @@ def main():
     (WEB / "data").mkdir(parents=True, exist_ok=True)
     photos = []
     for r, m in accepted_photos():
-        src = WORK / f"photos/{r['pageid']}.jpg"
-        if not src.exists():
+        src = next((q for q in [WORK / f"photos/{r['pageid']}.jpg", *WORK.glob(f"cloud/*/photos/{r['pageid']}.jpg")]
+                    if q.exists()), None)
+        if src is None:
             continue
         if is_dark(src):
             continue  # night shots segment poorly and paint the city black
