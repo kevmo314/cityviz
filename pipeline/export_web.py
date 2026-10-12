@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "data/work"
 WEB = ROOT / "web"
 EDGE_MAX_PX = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0
-CAM_EDGE_MAX_PX = float(sys.argv[2]) if len(sys.argv) > 2 else 6.0
+CAM_EDGE_MAX_PX = float(sys.argv[2]) if len(sys.argv) > 2 else 9.0
 
 
 def accepted_photos():
@@ -22,7 +22,8 @@ def accepted_photos():
         r = json.loads(l)
         meta[r["pageid"]] = r
     best = {}
-    sources = [WORK / "photo_poses.jsonl", *sorted(WORK.glob("cloud/*/results/*.jsonl"))]
+    # LOD2-model solves (pulled from the compute nodes) supersede the earlier LOD1 runs entirely
+    sources = sorted(WORK.glob("nodes/poses_shard*.jsonl")) or [WORK / "photo_poses.jsonl", *sorted(WORK.glob("cloud/*/results/*.jsonl"))]
     for l in (l for src in sources if src.exists() for l in open(src)):
         r = json.loads(l)
         if r.get("status") != "ok" or r.get("edge_med_px") is None:
@@ -33,6 +34,16 @@ def accepted_photos():
             continue  # ambiguous: another distinct pose explains the image about as well
         best[r["pageid"]] = r
     return [(r, meta[pid]) for pid, r in best.items() if pid in meta]
+
+
+def banner_frac(path, lo=0.085):
+    """Height of the burned-in timestamp banner: the run of top rows that are mostly near-black."""
+    a = np.asarray(Image.open(path).convert("L"), np.float32)
+    dark = (a < 40).mean(1)
+    k = 0
+    while k < len(dark) * 0.2 and dark[k] > 0.5:
+        k += 1
+    return max(lo, (k + 2) / len(dark))
 
 
 def undistort(im, theta):
@@ -70,8 +81,8 @@ def main():
         dst, th = WEB / f"photos/{r['pageid']}.jpg", WEB / f"photos/t/{r['pageid']}.jpg"
         if not dst.exists():
             im = undistort(Image.open(src).convert("RGB"), r["theta"])
-            im.thumbnail((1024, 1024), Image.LANCZOS)
-            im.save(dst, quality=82, optimize=True, progressive=True)
+            im.thumbnail((960, 960), Image.LANCZOS)
+            im.save(dst, quality=74, optimize=True, progressive=True)
             t = im.copy()
             t.thumbnail((320, 168), Image.LANCZOS)
             t.save(th, quality=75)
@@ -93,11 +104,12 @@ def main():
         best = {}
         for l in open(WORK / "cam_poses.jsonl"):
             r = json.loads(l)
-            if r.get("status") == "ok" and (r.get("edge_med_px") or 99) <= CAM_EDGE_MAX_PX and r["iou"] >= 0.8:
+            if r.get("status") == "ok" and (r.get("edge_med_px") or 99) <= CAM_EDGE_MAX_PX and r["iou"] >= 0.85 \
+                    and (r.get("margin") is None or r["margin"] >= 0.005):
                 best[r["id"]] = r
         cams = [{"id": r["id"], "name": r["name"], "pose": [round(v, 3) for v in r["theta"][:6]],
                  "K": [round(v, 5) for v in r["theta"][6:9]], "k1": round(r["theta"][9], 5), "w": r["w"], "h": r["h"],
-                 "rect": r["rect"], "edge_px": round(r["edge_med_px"], 2)} for r in best.values()]
+                 "rect": [0, 0, 1, round(1 - banner_frac(WORK / f"cam_ref/{r['id']}.jpg"), 3)], "edge_px": round(r["edge_med_px"], 2)} for r in best.values()]
     (WEB / "data/cams.json").write_text(json.dumps(cams, separators=(",", ":")))
     print(len(photos), "photos,", len(cams), "cams")
 

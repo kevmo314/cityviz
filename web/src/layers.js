@@ -31,9 +31,10 @@ const frag = /* glsl */`
 export async function buildLayer(item, texture, fogUniforms) {
   const buf = await (await fetch(item.depth)).arrayBuffer();
   const dv = new DataView(buf);
-  if (String.fromCharCode(...new Uint8Array(buf, 0, 4)) !== 'CVD1') throw new Error('bad depth layer');
+  if (String.fromCharCode(...new Uint8Array(buf, 0, 4)) !== 'CVD2') throw new Error('bad depth layer');
   const gw = dv.getUint16(4, true), gh = dv.getUint16(6, true), zmax = dv.getFloat32(8, true);
-  const q = new Uint16Array(buf.slice(12, 12 + gw * gh * 2));
+  const raw = new Response(new Blob([buf.slice(12)]).stream().pipeThrough(new DecompressionStream('deflate')));
+  const q = new Uint16Array(await raw.arrayBuffer());
   const lz = Math.log(zmax);
   const z = new Float32Array(gw * gh);
   for (let k = 0; k < z.length; k++) z[k] = q[k] ? Math.exp((q[k] - 1) / 65534 * lz) : 0;

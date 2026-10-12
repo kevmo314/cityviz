@@ -20,6 +20,8 @@ _W = {}
 
 
 def init_worker():
+    from localize_photos import pin_worker
+    pin_worker()
     import torch
     torch.set_num_threads(int(os.environ.get("SEG_THREADS", "3")))
     import render, segment
@@ -42,6 +44,10 @@ def daylight_frames(cam_id, n=6):
         # skip night frames and frozen/blank frames
         if lum > 70 and body.std() > 25:
             scored.append((lum, f, im))
+    # the feed's resolution occasionally changes; keep frames at the most common size
+    sizes = [s[2].size for s in scored]
+    size = max(set(sizes), key=sizes.count) if sizes else None
+    scored = [s for s in scored if s[2].size == size]
     scored.sort(key=lambda s: -s[0])
     return [s[2] for s in scored[:n]]
 

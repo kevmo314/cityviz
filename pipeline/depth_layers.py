@@ -6,10 +6,10 @@ For each exported photo with a stage-A prediction:
   3. fuse: keep predicted depth where something stands in front of the model (trees, awnings, vehicles,
      street furniture) or where the model is empty (e.g. newer buildings); never push surfaces behind
      the model's facade; drop sky
-  4. write web/depth/<id>.bin:  'CVD1' | uint16 GW, GH | float32 zmax | uint16[GH*GW] log-encoded z (0 = empty)
+  4. write web/depth/<id>.bin:  'CVD2' | uint16 GW, GH | float32 zmax | deflate(uint16[GH*GW] log-encoded z, 0 = empty)
 The viewer back-projects the grid through the photo's camera to build a textured mesh.
 """
-import json, struct, sys
+import json, struct, sys, zlib
 from pathlib import Path
 
 import cv2
@@ -97,8 +97,8 @@ def main():
             continue
         gh, gw = z.shape
         with open(out / f"{p['id']}.bin", "wb") as f:
-            f.write(b"CVD1" + struct.pack("<HHf", gw, gh, ZMAX))
-            f.write(encode(z).tobytes())
+            f.write(b"CVD2" + struct.pack("<HHf", gw, gh, ZMAX))
+            f.write(zlib.compress(encode(z).tobytes(), 9))
         stats[p["id"]] = st
         print(p["id"], {k: round(v, 3) for k, v in st.items()}, flush=True)
     (ROOT / "data/work/depth_layers.json").write_text(json.dumps(stats))
