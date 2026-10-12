@@ -69,6 +69,10 @@ def layer(city, seg, p, pred):
     z[hit & (np.abs(np.log(np.maximum(z, 1e-3) / zm)) < 0.05)] = 0
     z[lab == segment.SKY] = 0
     z[(z > ZMAX) | ~np.isfinite(z)] = 0
+    # drop points lying on the street surface (already painted); keeps upright things like cars and trees
+    P = th[:3] + d.reshape(gh, gw, 3) * (z / np.maximum((d @ fwd).reshape(gh, gw), 1e-3))[..., None]
+    gz = np.vectorize(city.ground)(P[..., 0], P[..., 1])
+    z[(z > 0) & (P[..., 2] < gz + 0.4)] = 0
     keep = cv2.morphologyEx((z > 0).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
     z[~keep] = 0
     return z, dict(scale=s, resid=resid, coverage=float((z > 0).mean()))
