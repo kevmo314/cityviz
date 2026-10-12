@@ -81,7 +81,7 @@ const frag = /* glsl */`
   uniform sampler2DArray uOrtho;   // aerial imagery layers (see ortho.js)
   uniform sampler2D uOrthoIdx;     // tile (i + 32, j + 32) -> layer + 1 in red, 0 = not loaded
   uniform float uOrthoTile;
-  uniform float uTerrain; // surface kind: 0 building, 1 terrain, 2 LiDAR detail
+  uniform float uTerrain; // surface kind: 0 building, 1 terrain
   uniform vec3 uFogColor;
   uniform float uFogDensity;
   varying vec3 vWorld;
@@ -92,11 +92,10 @@ const frag = /* glsl */`
     vec3 L2 = normalize(vec3(-0.6, 0.3, -0.5));
     float diff = 0.48 + 0.42 * max(dot(n, L), 0.0) + 0.12 * max(dot(n, L2), 0.0);
     float lift = mix(0.78, 1.0, smoothstep(0.0, 90.0, vWorld.y));  // darker toward street level
-    vec3 base = uTerrain > 1.5 ? vec3(0.50, 0.56, 0.47) * diff  // LiDAR detail: trees, structures
-      : uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
+    vec3 base = uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
       : (abs(n.y) > 0.7 ? vec3(0.82, 0.82, 0.84) : vec3(0.72, 0.73, 0.76)) * diff * lift;
     // Aerial imagery as the base for the ground and low roofs (tall towers lean in aerial photos, so they keep shading)
-    if (uOrthoTile > 0.0 && uTerrain < 1.5 && (uTerrain > 0.5 || (n.y > 0.7 && vWorld.y < 70.0))) {
+    if (uOrthoTile > 0.0 && (uTerrain > 0.5 || (n.y > 0.7 && vWorld.y < 70.0))) {
       vec2 g = vec2(vWorld.x, -vWorld.z) / uOrthoTile;
       ivec2 ti = ivec2(floor(g)) + 32;
       if (ti.x >= 0 && ti.y >= 0 && ti.x < 64 && ti.y < 64) {
@@ -200,7 +199,7 @@ export class ProjectorSystem {
       vertexShader: vert, fragmentShader: frag,
       uniforms: { ...this.uniforms, uTerrain: { value: kind } },
     });
-    this.materials = { building: mk(0), terrain: mk(1), detail: mk(2) };
+    this.materials = { building: mk(0), terrain: mk(1) };
     this.depthMat = new THREE.ShaderMaterial({ vertexShader: depthVert, fragmentShader: depthFrag, uniforms: { uEye: { value: new THREE.Vector3() } } });
     this.blitScene = new THREE.Scene();
     this.blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
