@@ -85,9 +85,11 @@ const frag = /* glsl */`
   void main() {
     vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
     vec3 L = normalize(vec3(0.45, 0.8, 0.35));
-    float diff = 0.62 + 0.38 * max(dot(n, L), 0.0);
+    vec3 L2 = normalize(vec3(-0.6, 0.3, -0.5));
+    float diff = 0.48 + 0.42 * max(dot(n, L), 0.0) + 0.12 * max(dot(n, L2), 0.0);
+    float lift = mix(0.78, 1.0, smoothstep(0.0, 90.0, vWorld.y));  // darker toward street level
     vec3 base = uTerrain > 0.5 ? vec3(0.36, 0.38, 0.38)
-      : (abs(n.y) > 0.7 ? vec3(0.80, 0.80, 0.82) : vec3(0.68, 0.69, 0.72)) * diff;
+      : (abs(n.y) > 0.7 ? vec3(0.82, 0.82, 0.84) : vec3(0.72, 0.73, 0.76)) * diff * lift;
     vec4 acc = vec4(0.0);
     for (int i = 0; i < ${SLOTS}; i++) {
       if (uW[i] <= 0.0) continue;
