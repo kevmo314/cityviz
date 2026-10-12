@@ -1,0 +1,392 @@
+import * as THREE from 'three';
+import { MapControls } from 'three/addons/controls/MapControls.js';
+import { TileStreamer } from './tiles.js';
+import { ProjectorSystem, poseCamera } from './projectors.js';
+import { CAM_PROXY, CAM_REFRESH_MS } from './config.js';
+
+const $ = id => document.getElementById(id);
+const canvas = $('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace; // photos are blended in their native (sRGB) encoding
+
+const SKY = new THREE.Color(0.72, 0.80, 0.88);
+const scene = new THREE.Scene();
+scene.background = SKY;
+
+const camera = new THREE.PerspectiveCamera(55, 1, 1, 30000);
+camera.position.set(-1900, 1300, 2300);
+const controls = new MapControls(camera, canvas);
+controls.target.set(-200, 0, -300);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 20;
+controls.maxDistance = 12000;
+controls.screenSpacePanning = false;
+
+const proj = new ProjectorSystem(renderer, scene, SKY);
+const tiles = new TileStreamer(scene, proj.materials);
+tiles.onChange = () => proj.invalidateDepth();
+
+// Water
+const water = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), new THREE.MeshBasicMaterial({ color: 0x2b3f52 }));
+water.rotation.x = -Math.PI / 2;
+water.position.y = -0.5;
+water.userData.noDepth = true;
+scene.add(water);
+
+// ---------------------------------------------------------------- data
+const state = { items: [], photos: [], cams: [], selected: null, mode: 'map', showPhotos: true, showCams: true };
+const toThree = p => new THREE.Vector3(p[0], p[2], -p[1]);
+
+function forwardOf(pose) {
+  const y = THREE.MathUtils.degToRad(pose[3]), p = THREE.MathUtils.degToRad(pose[4]);
+  return new THREE.Vector3(Math.sin(y) * Math.cos(p), Math.sin(p), -Math.cos(y) * Math.cos(p));
+}
+
+const texLoader = new THREE.TextureLoader();
+texLoader.setCrossOrigin('anonymous');
+function loadTexture(url) {
+  return new Promise((res, rej) => texLoader.load(url, t => { t.colorSpace = THREE.NoColorSpace; res(t); }, undefined, rej));
+}
+
+function makePhoto(p) {
+  const item = {
+    kind: 'photo', ...p, aspect: p.w / p.h, rect: [0, 0, 1, 1],
+    pos: toThree(p.pose), fwd: forwardOf(p.pose),
+    async load() { this.tex = await loadTexture(p.img); return this.tex; },
+    unload() { this.tex?.dispose(); this.tex = null; },
+  };
+  item.look = item.pos.clone().addScaledVector(item.fwd, 40);
+  return item;
+}
+
+function camUrl(id) { return `${CAM_PROXY}/cam/${id}?t=${Math.floor(Date.now() / CAM_REFRESH_MS)}`; }
+
+function makeCam(c) {
+  const item = {
+    kind: 'cam', ...c, aspect: c.w / c.h, rect: c.rect || [0, 0, 1, 1],
+    pos: toThree(c.pose), fwd: forwardOf(c.pose), title: c.name,
+    async load() { this.tex = await loadTexture(camUrl(c.id)); this.lastFrame = performance.now(); return this.tex; },
+    unload() { this.tex?.dispose(); this.tex = null; },
+    async refresh() {
+      if (this.busy) return;
+      this.busy = true;
+      try {
+        const t = await loadTexture(camUrl(c.id));
+        if (this.slot >= 0) { proj.drawColor(this.slot, t); this.tex?.dispose(); this.tex = t; } else t.dispose();
+      } catch (e) { /* camera offline */ }
+      this.busy = false;
+      this.lastFrame = performance.now();
+    },
+  };
+  item.look = item.pos.clone().addScaledVector(item.fwd, 40);
+  return item;
+}
+
+// ---------------------------------------------------------------- markers
+let markers;
+function buildMarkers() {
+  const n = state.items.length;
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  const cP = new THREE.Color(0xffb454), cC = new THREE.Color(0x4fd1c5);
+  state.items.forEach((it, i) => {
+    pos.set([it.pos.x, it.pos.y + 1, it.pos.z], i * 3);
+    (it.kind === 'cam' ? cC : cP).toArray(col, i * 3);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  markers = new THREE.Points(g, new THREE.PointsMaterial({ size: 7, sizeAttenuation: false, vertexColors: true, depthTest: true }));
+  markers.userData.noDepth = true;
+  markers.renderOrder = 2;
+  scene.add(markers);
+}
+
+const frustum = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }));
+frustum.userData.noDepth = true;
+frustum.renderOrder = 3;
+frustum.visible = false;
+scene.add(frustum);
+function showFrustum(item) {
+  if (!item) { frustum.visible = false; return; }
+  const c = poseCamera(item.pose, item.aspect, new THREE.PerspectiveCamera());
+  const d = 25, th = Math.tan(THREE.MathUtils.degToRad(c.fov / 2)) * d, tw = th * item.aspect;
+  const corners = [[-tw, -th], [tw, -th], [tw, th], [-tw, th]].map(([x, y]) => new THREE.Vector3(x, y, -d).applyMatrix4(c.matrixWorld));
+  const o = c.position;
+  const pts = [];
+  corners.forEach((p, i) => { pts.push(o, p, p, corners[(i + 1) % 4]); });
+  frustum.geometry.setFromPoints(pts);
+  frustum.material.color.set(item.kind === 'cam' ? 0x4fd1c5 : 0xffb454);
+  frustum.visible = true;
+}
+
+// Screen-space picking of markers.
+function pick(clientX, clientY, radius = 12) {
+  if (!markers?.visible) return null;
+  const v = new THREE.Vector3();
+  let best = null, bd = radius * radius;
+  for (const it of state.items) {
+    if (!visibleKind(it)) continue;
+    v.copy(it.pos).project(camera);
+    if (v.z > 1 || v.z < -1) continue;
+    const x = (v.x + 1) / 2 * innerWidth, y = (1 - v.y) / 2 * innerHeight;
+    const d = (x - clientX) ** 2 + (y - clientY) ** 2;
+    if (d < bd) { bd = d; best = it; }
+  }
+  return best;
+}
+const visibleKind = it => (it.kind === 'cam' ? state.showCams : state.showPhotos);
+
+// ---------------------------------------------------------------- projector scheduling
+function focusPoint() {
+  if (state.mode !== 'map' && state.selected) return state.selected.look;
+  return controls.target;
+}
+
+function scheduleProjectors() {
+  const f = focusPoint();
+  const cand = state.items.filter(it => visibleKind(it) && it.look.distanceTo(f) < 900);
+  cand.sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));
+  // Keep a mix: up to 10 photos and 6 cams nearest the focus.
+  const photos = cand.filter(c => c.kind === 'photo').slice(0, 10);
+  const cams = cand.filter(c => c.kind === 'cam').slice(0, 6);
+  const wanted = [...photos, ...cams].sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));
+  if (state.selected) {
+    const i = wanted.indexOf(state.selected);
+    if (i >= 0) wanted.splice(i, 1);
+    wanted.unshift(state.selected);
+  }
+  proj.assign(wanted);
+}
+
+function weightOf(it) {
+  if (state.selected === it) return 4;
+  if (state.mode === 'photo') return 0.25;
+  return it.kind === 'cam' ? 1.5 : 1;
+}
+
+// ---------------------------------------------------------------- photo mode
+const overlay = $('overlay');
+let anim = null;
+
+function viewParams(item) {
+  const A = innerWidth / innerHeight;
+  const c = poseCamera(item.pose, item.aspect, new THREE.PerspectiveCamera());
+  let fov, w, h;
+  if (A > item.aspect) { fov = c.fov; h = innerHeight; w = h * item.aspect; }
+  else {
+    const hfov = THREE.MathUtils.degToRad(item.pose[6]);
+    fov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(hfov / 2) / A)); w = innerWidth; h = w / item.aspect;
+  }
+  return { c, fov, w, h };
+}
+
+function placeOverlay(item) {
+  const { w, h } = viewParams(item);
+  Object.assign(overlay.style, { width: `${w}px`, height: `${h}px`, left: `${(innerWidth - w) / 2}px`, top: `${(innerHeight - h) / 2}px` });
+}
+
+function enterPhoto(item) {
+  state.selected = item;
+  state.mode = 'flying';
+  controls.enabled = false;
+  overlay.style.opacity = 0;
+  scheduleProjectors();
+  const { c, fov } = viewParams(item);
+  anim = {
+    t: 0, dur: Math.min(2.6, 0.9 + camera.position.distanceTo(c.position) / 1500),
+    p0: camera.position.clone(), q0: camera.quaternion.clone(), f0: camera.fov,
+    p1: c.position.clone(), q1: c.quaternion.clone(), f1: fov,
+    lift: Math.min(300, camera.position.distanceTo(c.position) * 0.25),
+  };
+  showFrustum(null);
+  updatePhotobar(item);
+  renderStrip(true);
+}
+
+function arrive(item) {
+  state.mode = 'photo';
+  if (item.kind === 'photo') {
+    overlay.src = item.img;
+    placeOverlay(item);
+    overlay.style.opacity = $('pOpacity').value;
+  }
+}
+
+function exitPhoto() {
+  if (state.mode === 'map') return;
+  anim = null;
+  state.mode = 'map';
+  state.selected = null;
+  overlay.style.opacity = 0;
+  $('photobar').hidden = true;
+  const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const tgt = camera.position.clone().addScaledVector(fwd, 60);
+  if (tgt.y < 0) tgt.y = 0;
+  controls.target.copy(tgt);
+  camera.fov = 55;
+  camera.updateProjectionMatrix();
+  controls.enabled = true;
+  renderStrip(true);
+}
+
+function updatePhotobar(item) {
+  $('photobar').hidden = false;
+  const t = $('pTitle');
+  t.textContent = item.kind === 'cam' ? `● LIVE · ${item.name}` : item.title.replace(/^File:/, '').replace(/\.[a-z]+$/i, '');
+  t.href = item.kind === 'cam' ? 'https://webcams.nyctmc.org/' : item.url;
+  const cr = $('pCredit');
+  cr.textContent = '';
+  if (item.kind === 'cam') cr.textContent = 'NYC DOT traffic camera · pose solved against the 3D model';
+  else {
+    cr.append(`${item.artist || 'Unknown author'} · `);
+    const a = document.createElement('a');
+    a.href = item.license_url || item.url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = item.license || 'see source';
+    cr.append(a, ` · Wikimedia Commons${item.date ? ' · ' + String(item.date).slice(0, 10) : ''}`);
+  }
+}
+
+function neighbors(item) {
+  return state.items.filter(it => it !== item && visibleKind(it))
+    .map(it => ({ it, d: it.pos.distanceTo(item.pos) + 30 * (1 - it.fwd.dot(item.fwd)) }))
+    .sort((a, b) => a.d - b.d).slice(0, 12).map(x => x.it);
+}
+function step(dir) {
+  if (!state.selected) return;
+  // Choose the nearest neighbor to the left/right of the current view direction.
+  const cur = state.selected;
+  const right = new THREE.Vector3().crossVectors(cur.fwd, new THREE.Vector3(0, 1, 0)).normalize();
+  const cands = neighbors(cur).filter(it => Math.sign(it.look.clone().sub(cur.look).dot(right)) === dir);
+  const next = cands[0] || neighbors(cur)[0];
+  if (next) enterPhoto(next);
+}
+
+// ---------------------------------------------------------------- thumbnail strip
+let stripFocus = null;
+function renderStrip(force) {
+  const f = focusPoint();
+  if (!force && stripFocus && stripFocus.distanceTo(f) < 60) return;
+  stripFocus = f.clone();
+  const strip = $('strip');
+  const near = state.items.filter(visibleKind).map(it => ({ it, d: it.look.distanceTo(f) })).sort((a, b) => a.d - b.d).slice(0, 24);
+  strip.textContent = '';
+  for (const { it } of near) {
+    const div = document.createElement('div');
+    div.className = 'th' + (it.kind === 'cam' ? ' cam' : '') + (it === state.selected ? ' sel' : '');
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.src = it.kind === 'cam' ? camUrl(it.id) : it.thumb;
+    img.alt = it.title || it.name;
+    div.append(img);
+    if (it.kind === 'cam') { const l = document.createElement('span'); l.className = 'live'; l.textContent = 'LIVE'; div.append(l); }
+    div.onclick = () => enterPhoto(it);
+    div.onmouseenter = () => state.mode === 'map' && showFrustum(it);
+    div.onmouseleave = () => state.mode === 'map' && showFrustum(null);
+    strip.append(div);
+  }
+}
+
+// ---------------------------------------------------------------- input
+const tooltip = $('tooltip');
+let down = null;
+canvas.addEventListener('pointerdown', e => {
+  down = { x: e.clientX, y: e.clientY };
+  if (state.mode !== 'map') exitPhoto();
+});
+canvas.addEventListener('pointerup', e => {
+  if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
+  const it = pick(e.clientX, e.clientY);
+  if (it) enterPhoto(it);
+});
+canvas.addEventListener('pointermove', e => {
+  if (state.mode !== 'map' || e.buttons) { tooltip.hidden = true; return; }
+  const it = pick(e.clientX, e.clientY);
+  showFrustum(it);
+  if (!it) { tooltip.hidden = true; canvas.style.cursor = ''; return; }
+  canvas.style.cursor = 'pointer';
+  tooltip.hidden = false;
+  tooltip.querySelector('img').src = it.kind === 'cam' ? camUrl(it.id) : it.thumb;
+  tooltip.querySelector('.t').textContent = it.kind === 'cam' ? `LIVE · ${it.name}` : it.title.replace(/^File:/, '');
+  tooltip.style.left = `${Math.min(e.clientX + 14, innerWidth - 230)}px`;
+  tooltip.style.top = `${Math.min(e.clientY + 14, innerHeight - 200)}px`;
+});
+addEventListener('keydown', e => {
+  if (e.key === 'Escape') exitPhoto();
+  if (e.key === 'ArrowRight') step(1);
+  if (e.key === 'ArrowLeft') step(-1);
+});
+$('pExit').onclick = exitPhoto;
+$('pNext').onclick = () => step(1);
+$('pPrev').onclick = () => step(-1);
+$('pOpacity').oninput = e => { if (state.mode === 'photo') overlay.style.opacity = e.target.value; };
+$('tPhotos').onchange = e => { state.showPhotos = e.target.checked; renderStrip(true); };
+$('tCams').onchange = e => { state.showCams = e.target.checked; renderStrip(true); };
+$('tMarkers').onchange = e => { if (markers) markers.visible = e.target.checked; };
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  if (state.mode === 'photo' && state.selected) { camera.fov = viewParams(state.selected).fov; placeOverlay(state.selected); }
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------- loop
+const clock = new THREE.Clock();
+let schedT = 0;
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (anim) {
+    anim.t += dt / anim.dur;
+    const k = Math.min(anim.t, 1), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    camera.position.lerpVectors(anim.p0, anim.p1, e);
+    camera.position.y += Math.sin(Math.PI * e) * anim.lift;
+    camera.quaternion.slerpQuaternions(anim.q0, anim.q1, e);
+    camera.fov = anim.f0 + (anim.f1 - anim.f0) * e;
+    camera.updateProjectionMatrix();
+    if (k >= 1) { const it = state.selected; anim = null; arrive(it); }
+  } else if (state.mode === 'map') {
+    controls.update();
+  }
+  schedT -= dt;
+  if (schedT <= 0) {
+    schedT = 0.5;
+    tiles.update(focusPoint());
+    scheduleProjectors();
+    if (state.mode === 'map') renderStrip(false);
+    const st = tiles.loading ? `streaming tiles (${tiles.loading})…` : '';
+    $('status').textContent = st;
+  }
+  const now = performance.now();
+  for (const s of proj.slots) if (s?.kind === 'cam' && s.ready && now - s.lastFrame > CAM_REFRESH_MS) s.refresh();
+  proj.update(dt, weightOf);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+async function main() {
+  $('status').textContent = 'loading city…';
+  const [photos, cams] = await Promise.all([
+    fetch('data/photos.json').then(r => r.json()).catch(() => []),
+    fetch('data/cams.json').then(r => r.json()).catch(() => []),
+    tiles.init(),
+  ]);
+  state.photos = photos.map(makePhoto);
+  state.cams = cams.map(makeCam);
+  state.items = [...state.photos, ...state.cams];
+  $('nphotos').textContent = state.photos.length.toLocaleString();
+  $('ncams').textContent = state.cams.length.toLocaleString();
+  buildMarkers();
+  const hash = decodeURIComponent(location.hash.slice(1));
+  const start = hash && state.items.find(it => String(it.id) === hash);
+  if (start) enterPhoto(start);
+  renderStrip(true);
+}
+
+window.cityviz = { state, proj, tiles, camera, renderer, controls, enterPhoto, exitPhoto };
+requestAnimationFrame(frame);
+main();
