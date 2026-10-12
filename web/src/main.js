@@ -30,7 +30,12 @@ const tiles = new TileStreamer(scene, proj.materials);
 tiles.onChange = () => proj.invalidateDepth();
 
 // Water
-const water = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), new THREE.MeshBasicMaterial({ color: 0x2b3f52 }));
+const water = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), new THREE.ShaderMaterial({
+  uniforms: { uColor: { value: new THREE.Color(0.30, 0.42, 0.52) }, uFogColor: proj.uniforms.uFogColor, uFogDensity: proj.uniforms.uFogDensity },
+  vertexShader: `varying float vFog; void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vFog = -mv.z; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `uniform vec3 uColor; uniform vec3 uFogColor; uniform float uFogDensity; varying float vFog;
+    void main() { float f = 1.0 - exp(-pow(uFogDensity * vFog, 2.0)); gl_FragColor = vec4(mix(uColor, uFogColor, f), 1.0); }`,
+}));
 water.rotation.x = -Math.PI / 2;
 water.position.y = -0.5;
 water.userData.noDepth = true;
