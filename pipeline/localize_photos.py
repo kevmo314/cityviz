@@ -105,6 +105,12 @@ def image_url(rec):
     return r.json()["thumb_2048_url"]
 
 
+def keep_image(parts, edge_max=6.0):
+    """loose version of export_web's acceptance gates (slack on edge error for re-exports with other thresholds)"""
+    e = parts.get("edge_med_px")
+    return e is not None and e <= edge_max and parts.get("edge_support", 0) >= 0.5 and parts.get("iou", 0) >= 0.85
+
+
 def solve(rec):
     import segment, solver
     city, seg = _W["city"], _W["seg"]
@@ -147,8 +153,9 @@ def solve(rec):
     if res is None:
         return {**out, "status": "no-candidates"}
     theta, J, parts = res
-    IMGDIR.mkdir(parents=True, exist_ok=True)
-    img.save(IMGDIR / f"{rec['pageid']}.jpg", quality=90)
+    if keep_image(parts):  # only what can pass the export gates; most solves don't, and full-size images add up
+        IMGDIR.mkdir(parents=True, exist_ok=True)
+        img.save(IMGDIR / f"{rec['pageid']}.jpg", quality=90)
     return {**out, "status": "ok", "theta": [round(float(v), 5) for v in theta], "J": float(J), **parts,
             "w": W, "h": H, "f_exif": fexif, "secs": round(time.time() - t0, 1)}
 
