@@ -33,6 +33,12 @@ def hood_frac(probs):
     return f + MARGIN if f >= MIN_HOOD else 0.0
 
 
+def accepted(r):
+    """the export gates (export_web.accepted_photos): no point checking photos that won't be published"""
+    return (r.get("status") == "ok" and r.get("edge_med_px") is not None and r["edge_med_px"] <= 5.0
+            and r["edge_support"] >= 0.5 and r["iou"] >= 0.85 and (r.get("margin") is None or r["margin"] >= 0.005))
+
+
 def main():
     out = ROOT / "data/work/photo_rect.jsonl"
     done = {json.loads(l)["id"] for l in open(out)} if out.exists() else set()
@@ -40,7 +46,7 @@ def main():
     for p in sys.argv[1:]:
         for l in open(p):
             r = json.loads(l)
-            if r.get("status") == "ok" and str(r["pageid"]).startswith("mly_") and r["pageid"] not in done:
+            if accepted(r) and str(r["pageid"]).startswith("mly_") and r["pageid"] not in done:
                 ids.append(r["pageid"])
     seg = segment.Segmenter()
     with open(out, "a") as f:
