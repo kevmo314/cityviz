@@ -124,9 +124,10 @@ def solve(rec):
     g = city.ground(x, y)
     W, H = img.size
     if rec.get("source") == "mapillary":
-        # Mapillary's own SfM pose and calibrated focal: metres-level position, heading within a few degrees
+        # Mapillary SfM heading and calibrated focal are accurate (median 1.6 deg, focal within 1% of our solves); its
+        # positions are GPS-anchored and off by ~10 m in Midtown street canyons, so position stays loose
         fexif = rec.get("focal")
-        prior = solver.Prior(x=x, y=y, ground=g, f=fexif, f_sigma=0.1, pos_sigma=8.0, heading_sigma=20.0,
+        prior = solver.Prior(x=x, y=y, ground=g, f=fexif, f_sigma=0.1, pos_sigma=15.0, heading_sigma=20.0,
                              heading=geo.true_heading_to_grid(rec["heading"]))
     else:
         f35 = rec.get("focal35")
