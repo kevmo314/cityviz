@@ -63,7 +63,7 @@ function loadTexture(url) {
 
 function makePhoto(p) {
   const item = {
-    kind: 'photo', ...p, aspect: p.w / p.h, rect: [0, 0, 1, 1],
+    kind: 'photo', ...p, aspect: p.w / p.h, rect: p.rect || [0, 0, 1, 1],
     img: ASSET_BASE + p.img, thumb: ASSET_BASE + p.thumb, depth: p.depth && ASSET_BASE + p.depth,
     pos: toThree(p.pose), fwd: forwardOf(p.pose),
     async load() {

@@ -92,6 +92,9 @@ def main():
     (WEB / "photos/t").mkdir(parents=True, exist_ok=True)
     (WEB / "data").mkdir(parents=True, exist_ok=True)
     photos = []
+    # texture crops (car hoods on dashboard shots, pipeline/photo_hood.py)
+    rects = {json.loads(l)["id"]: json.loads(l)["rect"] for l in open(WORK / "photo_rect.jsonl")} \
+        if (WORK / "photo_rect.jsonl").exists() else {}
     for r, m in accepted_photos():
         src = next((q for q in [WORK / f"photos/{r['pageid']}.jpg", *WORK.glob(f"cloud/*/photos/{r['pageid']}.jpg")]
                     if q.exists()), None)
@@ -115,11 +118,12 @@ def main():
             "license_url": m.get("license_url"), "date": m.get("date"),
             "year": capture_year(m.get("date")),
             **({"source": "mapillary"} if m.get("source") == "mapillary" else {}),
+            **({"rect": rects[r["pageid"]]} if rects.get(r["pageid"], [0, 0, 1, 1])[3] < 1 else {}),
         })
     for p in photos:
         if (WEB / f"depth/{p['id']}.bin").exists():
             p["depth"] = f"depth/{p['id']}.bin"
-    photos.sort(key=lambda p: p["id"])
+    photos.sort(key=lambda p: str(p["id"]))
     (WEB / "data/photos.json").write_text(json.dumps(photos, separators=(",", ":")))
 
     cams = []
