@@ -8,8 +8,9 @@
   <link rel="stylesheet" href="style.css">
   <script type="importmap">
     { "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.2.0/dist/spark.module.js"
     } }
   </script>
 </head>
@@ -24,9 +25,10 @@
     <label><input type="checkbox" id="tPhotos" checked> Photos</label>
     <label><input type="checkbox" id="tCams" checked> Live cams</label>
     <label><input type="checkbox" id="tLayers" checked> 3D layers</label>
+    <label><input type="checkbox" id="tSplats" checked> Splats</label>
     <label><input type="checkbox" id="tMarkers" checked> Markers</label>
     <div id="status"></div>
-    <p class="credit">Photos: Wikimedia Commons contributors · Cams: NYC DOT · 3D: NYC DoITT · Aerial: NYS ITS Geospatial Services</p>
+    <p class="credit">Photos: Wikimedia Commons contributors · Mapillary contributors (CC BY-SA) · Cams: NYC DOT · 3D: NYC DoITT · Aerial: NYS ITS Geospatial Services</p>
   </header>
 
   <div id="photobar" hidden>

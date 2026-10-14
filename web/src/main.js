@@ -5,6 +5,7 @@ import { ProjectorSystem, recency, poseCamera, orientCamera, imageFrustum, setFr
 import { CAM_PROXY, CAM_REFRESH_MS, ASSET_BASE } from './config.js';
 import { buildLayer, layerAlpha } from './layers.js';
 import { OrthoCache } from './ortho.js';
+import { Splats } from './splats.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view');
@@ -29,6 +30,7 @@ controls.screenSpacePanning = false;
 
 const proj = new ProjectorSystem(renderer, scene, SKY);
 const ortho = new OrthoCache(renderer, proj);
+const splats = new Splats(renderer, scene);
 const tiles = new TileStreamer(scene, proj.materials, ASSET_BASE + 'tiles/');
 tiles.onChange = () => proj.invalidateDepth();
 
@@ -275,7 +277,8 @@ function updatePhotobar(item) {
     const a = document.createElement('a');
     a.href = item.license_url || item.url; a.target = '_blank'; a.rel = 'noopener';
     a.textContent = item.license || 'see source';
-    cr.append(a, ` · Wikimedia Commons${item.date ? ' · ' + String(item.date).slice(0, 10) : ''}`);
+    const src = item.source === 'mapillary' ? 'Mapillary' : 'Wikimedia Commons';
+    cr.append(a, ` · ${src}${item.date ? ' · ' + String(item.date).slice(0, 10) : ''}`);
   }
 }
 
@@ -355,6 +358,7 @@ $('pOpacity').oninput = e => { if (state.mode === 'photo') overlay.style.opacity
 $('tPhotos').onchange = e => { state.showPhotos = e.target.checked; renderStrip(true); };
 $('tCams').onchange = e => { state.showCams = e.target.checked; renderStrip(true); };
 $('tLayers').onchange = e => { state.showLayers = e.target.checked; };
+$('tSplats').onchange = e => { splats.visible = e.target.checked; };
 $('tMarkers').onchange = e => { if (markers) markers.visible = e.target.checked; };
 
 function resize() {
@@ -418,6 +422,7 @@ function frame() {
     schedT = 0.5;
     tiles.update(focusPoint());
     ortho.update(focusPoint());
+    splats.update(focusPoint());
     scheduleProjectors();
     if (state.mode === 'map') renderStrip(false);
     writeHash();
@@ -444,6 +449,7 @@ async function main() {
   const [photos, cams] = await Promise.all([
     fetch('data/photos.json').then(r => r.json()).catch(() => []),
     fetch('data/cams.json').then(r => r.json()).catch(() => []),
+    fetch('data/splats.json').then(r => r.json()).catch(() => []).then(l => splats.init(ASSET_BASE, l)),
     tiles.init(),
     ortho.init(ASSET_BASE + 'ortho/'),
   ]);
@@ -459,6 +465,6 @@ async function main() {
   renderStrip(true);
 }
 
-window.cityviz = { state, proj, tiles, ortho, camera, renderer, controls, enterPhoto, exitPhoto };
+window.cityviz = { state, proj, tiles, ortho, splats, camera, renderer, controls, enterPhoto, exitPhoto };
 requestAnimationFrame(frame);
 main();

@@ -1,4 +1,4 @@
-"""Batch: download Commons photos, segment, solve 7-DoF pose against the city model, export accepted ones for the web."""
+"""Batch: download Commons / Mapillary photos, segment, solve the pose against the city model, keep accepted ones."""
 import io, json, os, re, sys, time, random
 from collections import defaultdict
 from multiprocessing import Pool
@@ -94,13 +94,24 @@ def fetch(url):
     raise RuntimeError("rate limited")
 
 
+def image_url(rec):
+    """Commons thumbs are stable; Mapillary's are signed and expire, so look one up at solve time"""
+    if rec.get("source") != "mapillary":
+        return rec["thumb"]
+    token = (Path.home() / ".mapillary_token").read_text().strip()
+    r = _W["http"].get(f"https://graph.mapillary.com/{rec['mly_id']}", timeout=60,
+                       params=dict(access_token=token, fields="thumb_2048_url"))
+    r.raise_for_status()
+    return r.json()["thumb_2048_url"]
+
+
 def solve(rec):
     import segment, solver
     city, seg = _W["city"], _W["seg"]
     out = {"pageid": rec["pageid"], "title": rec["title"]}
     t0 = time.time()
     try:
-        img = ImageOps.exif_transpose(Image.open(io.BytesIO(fetch(rec["thumb"])))).convert("RGB")
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(fetch(image_url(rec))))).convert("RGB")
     except Exception as e:
         return {**out, "status": f"download: {e}"}
     lab = seg.labels(img)
@@ -112,11 +123,17 @@ def solve(rec):
     x, y = map(float, geo.to_local(rec["lon"], rec["lat"]))
     g = city.ground(x, y)
     W, H = img.size
-    f35 = rec.get("focal35")
-    # EXIF is only a weak prior: crops and edits make it unreliable.
-    fexif = (np.hypot(W, H) * f35 / 43.27) / W if f35 and 8 < f35 < 400 else None
-    prior = solver.Prior(x=x, y=y, ground=g, f=fexif,
-                         heading=geo.true_heading_to_grid(rec["heading"]) if rec.get("heading") is not None else None)
+    if rec.get("source") == "mapillary":
+        # Mapillary's own SfM pose and calibrated focal: metres-level position, heading within a few degrees
+        fexif = rec.get("focal")
+        prior = solver.Prior(x=x, y=y, ground=g, f=fexif, f_sigma=0.1, pos_sigma=8.0, heading_sigma=20.0,
+                             heading=geo.true_heading_to_grid(rec["heading"]))
+    else:
+        f35 = rec.get("focal35")
+        # EXIF is only a weak prior: crops and edits make it unreliable.
+        fexif = (np.hypot(W, H) * f35 / 43.27) / W if f35 and 8 < f35 < 400 else None
+        prior = solver.Prior(x=x, y=y, ground=g, f=fexif,
+                             heading=geo.true_heading_to_grid(rec["heading"]) if rec.get("heading") is not None else None)
     # Camera inside a footprint: likely an elevated vantage point (observation deck, roof, window).
     prim, t, hit = city.cast(np.array([[x, y, 2000.0]]), np.array([[0, 0, -1.0]]))
     if hit[0] and city.label[prim[0]] == 3 and 2000 - t[0] > g + 10:

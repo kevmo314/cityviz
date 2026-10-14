@@ -18,8 +18,8 @@ setInterval(refreshList, 3600_000);
 
 // --- static assets: /a/<path> -> gs://$BUCKET/site/<path>, using the service account's metadata-server token
 const BUCKET = process.env.BUCKET || 'kevmo314-cityviz';
-const ASSET_RE = /^\/a\/((?:photos|depth|ortho|tiles)\/[A-Za-z0-9_\-./]+)$/;
-const TYPES = { jpg: 'image/jpeg', json: 'application/json', bin: 'application/octet-stream' };
+const ASSET_RE = /^\/a\/((?:photos|depth|ortho|tiles|splats)\/[A-Za-z0-9_\-./]+)$/;
+const TYPES = { jpg: 'image/jpeg', json: 'application/json', bin: 'application/octet-stream', splat: 'application/octet-stream' };
 let token = { value: null, exp: 0 };
 async function accessToken() {
   if (token.value && Date.now() < token.exp) return token.value;

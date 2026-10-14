@@ -1,6 +1,6 @@
 """Solve a fixed 7-DoF pose for each NYC DOT traffic camera by aligning its (multi-frame, daylight) segmentation
 with ray-cast renders of the city model. Cameras are static, so this runs once per camera."""
-import json, os, re, sys, time
+import json, math, os, re, sys, time
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 FRAMES = ROOT / "data/raw/cam_frames"
 OUT = ROOT / "data/work/cam_poses.jsonl"
 TOP_CROP = 0.085  # timestamp banner
+# NYC DOT cams sit at wide zoom (~60 deg horizontal). Focal length is barely observable from the solver's cost (a
+# narrow lens further back fits the far street canyon almost as well), so without this prior they came out 15-30 deg.
+CAM_F_PRIOR = 0.5 / math.tan(math.radians(60) / 2)
 DIRS = {"north": 0, "northeast": 45, "east": 90, "southeast": 135, "south": 180, "southwest": 225, "west": 270, "northwest": 315}
 
 _W = {}
@@ -91,7 +94,8 @@ def solve(cam):
     a[: int(a.shape[0] * TOP_CROP) + 1] = a[int(a.shape[0] * TOP_CROP) + 2]
     prior = solver.Prior(x=x, y=y, ground=g, pos_sigma=12.0,
                          heading=geo.true_heading_to_grid(ocr) if ocr is not None else None, heading_sigma=60.0,
-                         heights=[5.0, 9.0], z_range=(2.5, 16.0), pitch_range=(-50.0, 10.0))
+                         heights=[5.0, 9.0], z_range=(2.5, 16.0), pitch_range=(-50.0, 10.0),
+                         f=CAM_F_PRIOR, f_sigma=0.25)
     obs = solver.Observation(Image.fromarray(a), lab)
     res = solver.Solver(city, obs, prior).solve()
     if res is None:

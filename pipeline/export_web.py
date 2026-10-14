@@ -21,9 +21,14 @@ def accepted_photos():
     for l in open(ROOT / "data/raw/commons.jsonl"):
         r = json.loads(l)
         meta[r["pageid"]] = r
+    for f in WORK.glob("candidates_mly_*.jsonl"):  # Mapillary candidates carry their own credit fields
+        for l in open(f):
+            r = json.loads(l)
+            meta[r["pageid"]] = r
     best = {}
     # LOD2-model solves (pulled from the compute nodes) supersede the earlier LOD1 runs entirely
     sources = sorted(WORK.glob("nodes/poses_shard*.jsonl")) or [WORK / "photo_poses.jsonl", *sorted(WORK.glob("cloud/*/results/*.jsonl"))]
+    sources += sorted(WORK.glob("nodes/mly_*.jsonl"))
     for l in (l for src in sources if src.exists() for l in open(src)):
         r = json.loads(l)
         if r.get("status") != "ok" or r.get("edge_med_px") is None:
@@ -109,6 +114,7 @@ def main():
             "K": [round(v, 5) for v in r["theta"][6:9]], "edge_px": round(r["edge_med_px"], 2), "artist": m.get("artist", "")[:120], "license": m.get("license"),
             "license_url": m.get("license_url"), "date": m.get("date"),
             "year": capture_year(m.get("date")),
+            **({"source": "mapillary"} if m.get("source") == "mapillary" else {}),
         })
     for p in photos:
         if (WEB / f"depth/{p['id']}.bin").exists():

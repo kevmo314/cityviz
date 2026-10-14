@@ -53,6 +53,7 @@ class Prior:
     ground: float
     heading: float | None = None      # grid-frame degrees
     f: float | None = None            # EXIF focal / width
+    f_sigma: float = 0.25             # prior sigma of log f
     pos_sigma: float = 25.0
     heading_sigma: float = 45.0
     heights: list = field(default_factory=lambda: [1.6])   # meters above ground for coarse search
@@ -164,7 +165,7 @@ class Solver:
         if p.heading is not None:
             c += (((theta[3] - p.heading + 180) % 360 - 180) / p.heading_sigma) ** 2
         if p.f is not None:
-            c += (np.log(theta[6] / p.f) / 0.25) ** 2
+            c += (np.log(theta[6] / p.f) / p.f_sigma) ** 2
         c += (theta[7] / 0.06) ** 2 + (theta[8] / 0.06) ** 2 + (theta[9] / 0.3) ** 2 + (theta[5] / 10) ** 2
         return 0.002 * c
 
@@ -216,7 +217,17 @@ class Solver:
         for e, f, p, r in hyps:
             if all(abs(np.log(f / g)) > 0.08 for _, g, _, _ in out):
                 out.append((e, f, p, r))
-        return out[:3] if has_h else out
+        out = out[:3] if has_h else out
+        # Always try the prior focal length too: vanishing points from small, noisy frames lean telephoto, and a
+        # narrow lens further back matches the far street canyon about as well as the true wide one, so the search
+        # never recovers if no hypothesis starts near the right focal length.
+        if self.prior.f and all(abs(np.log(self.prior.f / g)) > 0.08 for _, g, _, _ in out):
+            best = min((minimize(vp_cost, [p0, 0, np.log(self.prior.f)], args=(self.prior.f,), method="Nelder-Mead",
+                                 options=dict(maxfev=300, xatol=0.01, fatol=1e-4)) for p0 in (-10, 5, 20, 35)),
+                       key=lambda r: r.fun)
+            if abs(best.x[1]) < 15:
+                out.append((float(best.fun), self.prior.f, float(best.x[0]), float(best.x[1])))
+        return out
 
     # ---------------------------------------------------------------- stage 2: coarse panorama search
     def coarse(self, rot_hyps, keep=6):
