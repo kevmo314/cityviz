@@ -5,7 +5,8 @@ localize_photos.py uses as tight priors. Sampling keeps one image per SAMPLE_CEL
 dashcams (windshield glare, hood in frame) and panoramas (would need cutting into faces first), preferring recent
 captures and phones / action cams over unknown cameras.
 
-usage: fetch_mapillary.py <name> <lon0> <lat0> <lon1> <lat1>     (token in ~/.mapillary_token)
+usage: fetch_mapillary.py <name> [<lon0> <lat0> <lon1> <lat1>]   (all of Manhattan without a box; token in
+~/.mapillary_token)
 writes data/raw/mapillary_<name>.jsonl (all indexed images) and data/work/candidates_mly_<name>.jsonl (sample, in the
 Commons candidate schema: pageid = "mly_<id>", lat, lon, heading, width, height, focal (width-normalised), ...)
 """
@@ -86,12 +87,19 @@ def usable(d):
             and datetime.fromtimestamp(d["captured_at"] / 1000, timezone.utc).year >= MIN_YEAR)
 
 
-def sample(recs):
-    """one image per (cell, heading bin): most recent first, known camera with calibrated focal preferred"""
+def cell_key(r):
+    x, y = map(float, geo.to_local(r["lon"], r["lat"]))
+    return int(x // SAMPLE_CELL), int(y // SAMPLE_CELL), int(r["heading"] % 360 // (360 / HEADING_BINS))
+
+
+def sample(recs, taken=frozenset()):
+    """one image per (cell, heading bin) not already in `taken`: most recent first, known camera with calibrated focal
+    preferred"""
     cells = defaultdict(list)
     for r in recs:
-        x, y = map(float, geo.to_local(r["lon"], r["lat"]))
-        cells[(int(x // SAMPLE_CELL), int(y // SAMPLE_CELL), int(r["heading"] % 360 // (360 / HEADING_BINS)))].append(r)
+        k = cell_key(r)
+        if k not in taken:
+            cells[k].append(r)
     out = []
     for rs in cells.values():
         rs.sort(key=lambda r: (r["focal"] is not None, bool(r["camera"]), r["date"]), reverse=True)
@@ -99,28 +107,67 @@ def sample(recs):
     return out
 
 
+def coarse_to_fine(cand, levels=(160.0, 80.0, 40.0)):
+    """order candidates so any prefix covers the area evenly: one per 160 m cell first, then per 80 m, 40 m, then
+    the rest (solving the full list takes days; it can be stopped and published at any point)"""
+    import random
+    rng = random.Random(0)
+    rest, order = list(cand), []
+    for size in levels:
+        seen, keep = set(), []
+        rng.shuffle(rest)
+        for r in rest:
+            x, y = map(float, geo.to_local(r["lon"], r["lat"]))
+            k = (int(x // size), int(y // size))
+            (keep if k in seen else order).append(r)
+            seen.add(k)
+        rest = keep
+    rng.shuffle(rest)
+    return order + rest
+
+
+def manhattan():
+    from shapely.geometry import shape
+    from shapely.ops import unary_union
+    feats = json.loads((ROOT / "data/raw/boroughs.geojson").read_text())["features"]
+    return unary_union([shape(f["geometry"]) for f in feats if f["properties"].get("boroname") == "Manhattan"])
+
+
 def main():
-    name, *box = sys.argv[1:]
-    x0, y0, x1, y1 = map(float, box)
-    # start from ~400 m cells: the API times out on large boxes long before it would return the 2000 cap
+    """usage: fetch_mapillary.py <name> [lon0 lat0 lon1 lat1]   (no box: all of Manhattan)"""
+    from concurrent.futures import ThreadPoolExecutor
+    from shapely.geometry import Point, box as sbox
+    name, *bx = sys.argv[1:]
+    area = manhattan()
+    x0, y0, x1, y1 = map(float, bx) if bx else area.bounds
+    # ~400 m starting cells (the API times out on large boxes long before it would return the 2000 cap), only those
+    # touching Manhattan: the city model has no buildings elsewhere
     nx, ny = math.ceil((x1 - x0) / GRID), math.ceil((y1 - y0) / GRID)
+    cells = [(x0 + i * (x1 - x0) / nx, y0 + j * (y1 - y0) / ny, x0 + (i + 1) * (x1 - x0) / nx, y0 + (j + 1) * (y1 - y0) / ny)
+             for i in range(nx) for j in range(ny)]
+    cells = [c for c in cells if area.intersects(sbox(*c))]
+    print(f"{len(cells)} cells", file=sys.stderr, flush=True)
     found = {}
-    for i in range(nx):
-        for j in range(ny):
-            index((x0 + i * (x1 - x0) / nx, y0 + j * (y1 - y0) / ny, x0 + (i + 1) * (x1 - x0) / nx, y0 + (j + 1) * (y1 - y0) / ny),
-                  out=found)
-        print(f"column {i + 1}/{nx}: {len(found)} indexed", file=sys.stderr, flush=True)
+    with ThreadPoolExecutor(4) as ex:
+        for n, part in enumerate(ex.map(index, cells)):
+            found.update(part)
+            if n % 20 == 0:
+                print(f"{n + 1}/{len(cells)} cells: {len(found)} indexed", file=sys.stderr, flush=True)
     raw = ROOT / f"data/raw/mapillary_{name}.jsonl"
     with open(raw, "w") as f:
         for d in found.values():
             f.write(json.dumps(d) + "\n")
     recs = [to_record(d) for d in found.values() if usable(d)]
-    cand = sample(recs)
+    recs = [r for r in recs if area.contains(Point(r["lon"], r["lat"]))]
+    # cells sampled by earlier runs (other candidate lists) are not sampled again
+    taken = {cell_key(json.loads(l)) for f in (ROOT / "data/work").glob("candidates_mly_*.jsonl")
+             if f.name != f"candidates_mly_{name}.jsonl" for l in open(f)}
+    cand = coarse_to_fine(sample(recs, taken))
     out = ROOT / f"data/work/candidates_mly_{name}.jsonl"
     with open(out, "w") as f:
-        for r in sorted(cand, key=lambda r: r["pageid"]):
+        for r in cand:
             f.write(json.dumps(r) + "\n")
-    print(f"{len(found)} indexed, {len(recs)} usable, {len(cand)} sampled -> {out}", file=sys.stderr)
+    print(f"{len(found)} indexed, {len(recs)} usable in Manhattan, {len(cand)} sampled -> {out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
