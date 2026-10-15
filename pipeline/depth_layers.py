@@ -84,11 +84,15 @@ def main():
     seg = segment.Segmenter()
     out = ROOT / "web/depth"
     out.mkdir(parents=True, exist_ok=True)
-    stats = {}
+    sf = ROOT / "data/work/depth_layers.json"
+    stats = json.loads(sf.read_text()) if sf.exists() else {}
     for p in photos:
         src = ROOT / f"data/work/depth_pred/{p['id']}.npz"
         if not src.exists() or "K" not in p:
             continue
+        dst = out / f"{p['id']}.bin"
+        if str(p["id"]) in stats and dst.exists() and dst.stat().st_mtime > src.stat().st_mtime:
+            continue  # layer already built from this prediction
         pred = dict(np.load(src, allow_pickle=True))
         if pred.get("conf") is not None and pred["conf"].dtype == object:
             pred["conf"] = None
@@ -96,12 +100,12 @@ def main():
         if z is None or st["resid"] > 0.25:
             continue
         gh, gw = z.shape
-        with open(out / f"{p['id']}.bin", "wb") as f:
+        with open(dst, "wb") as f:
             f.write(b"CVD2" + struct.pack("<HHf", gw, gh, ZMAX))
             f.write(zlib.compress(encode(z).tobytes(), 9))
-        stats[p["id"]] = st
+        stats[str(p["id"])] = st
         print(p["id"], {k: round(v, 3) for k, v in st.items()}, flush=True)
-    (ROOT / "data/work/depth_layers.json").write_text(json.dumps(stats))
+    sf.write_text(json.dumps(stats))
 
 
 if __name__ == "__main__":
