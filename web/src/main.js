@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { TileStreamer } from './tiles.js';
-import { ProjectorSystem, recency, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
+import { ProjectorSystem, SLOTS, recency, poseCamera, orientCamera, imageFrustum, setFrustum, cameraFrustum } from './projectors.js';
 import { CAM_PROXY, CAM_REFRESH_MS, ASSET_BASE } from './config.js';
 import { buildLayer, layerAlpha } from './layers.js';
 import { OrthoCache } from './ortho.js';
 import { Splats } from './splats.js';
+import { loadFootprints, CoverageSelector } from './coverage.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('view');
@@ -168,16 +169,28 @@ function focusPoint() {
   return controls.target;
 }
 
+let coverage = null; // CoverageSelector once footprints are loaded
+
 function scheduleProjectors() {
   const f = focusPoint();
   const cand = state.items.filter(it => visibleKind(it) && it.look.distanceTo(f) < 900);
   // nearest first, with newer imagery counting as closer (an image 3 years older ranks like one ~1.4x farther)
   const score = it => it.look.distanceToSquared(f) / (0.5 + recency(it));
   cand.sort((a, b) => score(a) - score(b));
-  // Keep a mix: up to 10 photos and 6 cams, preferring near and recent.
-  const photos = cand.filter(c => c.kind === 'photo').slice(0, 10);
-  const cams = cand.filter(c => c.kind === 'cam').slice(0, 6);
-  const wanted = [...photos, ...cams].sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));
+  let wanted;
+  if (coverage) {
+    // what paints the most of the view, then the nearest others (preloaded for when the view moves)
+    const bonus = it => (it.kind === 'cam' ? 1.5 : 0.7 + 0.3 * recency(it)) * (it.slot >= 0 ? 1.2 : 1);
+    const pool = state.items.filter(it => visibleKind(it) && it !== state.selected);
+    wanted = coverage.pick(camera, pool, SLOTS - (state.selected ? 1 : 0), bonus);
+    const have = new Set(wanted);
+    for (const it of cand) if (wanted.length < SLOTS - 4 && !have.has(it)) wanted.push(it);
+  } else {
+    // Keep a mix: up to 10 photos and 6 cams, preferring near and recent.
+    const photos = cand.filter(c => c.kind === 'photo').slice(0, 10);
+    const cams = cand.filter(c => c.kind === 'cam').slice(0, 6);
+    wanted = [...photos, ...cams].sort((a, b) => a.look.distanceToSquared(f) - b.look.distanceToSquared(f));
+  }
   if (state.selected) {
     const i = wanted.indexOf(state.selected);
     if (i >= 0) wanted.splice(i, 1);
@@ -459,12 +472,15 @@ async function main() {
   $('nphotos').textContent = state.photos.length.toLocaleString();
   $('ncams').textContent = state.cams.length.toLocaleString();
   buildMarkers();
+  loadFootprints('data/footprints.bin', state.photos, state.cams)
+    .then(g => { coverage = new CoverageSelector(proj, g); schedT = 0; })
+    .catch(e => console.warn('footprints unavailable, using nearest-first projectors:', e.message));
   applyHash(true);
   state.ready = true;
   addEventListener('hashchange', () => { if (location.hash !== lastHash) applyHash(false); });
   renderStrip(true);
 }
 
-window.cityviz = { state, proj, tiles, ortho, splats, camera, renderer, controls, enterPhoto, exitPhoto };
+window.cityviz = { state, proj, get coverage() { return coverage; }, set coverage(v) { coverage = v; }, tiles, ortho, splats, camera, renderer, controls, enterPhoto, exitPhoto };
 requestAnimationFrame(frame);
 main();

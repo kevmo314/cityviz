@@ -2,7 +2,7 @@
 // Each active projector owns one layer in a color texture array and one layer in a depth (distance) texture array.
 import * as THREE from 'three';
 
-export const SLOTS = 16;
+export const SLOTS = 24;
 const COLOR_RES = 1024;
 const DEPTH_RES = 512;
 
@@ -230,8 +230,19 @@ export class ProjectorSystem {
   drawDepth(slot) {
     const item = this.slots[slot];
     if (!item) return;
-    const r = this.renderer;
     const cam = poseCamera(item, this.cam);
+    this.renderDistance(cam, this.depthRT, slot);
+    const u = this.uniforms;
+    u.uVP.value[slot].multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    u.uPos.value[slot].copy(cam.position);
+    const rc = item.rect || [0, 0, 1, 1];
+    u.uRect.value[slot].set(rc[0], rc[1], rc[2], rc[3]);
+    u.uDist.value[slot].set(item.k1 || 0, item.aspect);
+  }
+
+  // Render distance-from-eye of the city (red channel; 1e7 where nothing is hit) from `cam` into a render target.
+  renderDistance(cam, rt, layer = 0) {
+    const r = this.renderer;
     this.depthMat.uniforms.uEye.value.copy(cam.position);
     const prev = r.getRenderTarget();
     const prevClear = r.getClearColor(new THREE.Color()), prevAlpha = r.getClearAlpha();
@@ -242,7 +253,7 @@ export class ProjectorSystem {
     const hidden = [];
     this.scene.traverse(o => { if (o.userData.noDepth && o.visible) { o.visible = false; hidden.push(o); } });
     r.setClearColor(new THREE.Color(1e7, 0, 0), 1);
-    r.setRenderTarget(this.depthRT, slot);
+    r.setRenderTarget(rt, layer);
     r.clear();
     r.render(this.scene, cam);
     r.setRenderTarget(prev);
@@ -251,12 +262,6 @@ export class ProjectorSystem {
     this.scene.background = prevBg;
     this.scene.overrideMaterial = prevOverride;
     this.scene.fog = prevFog;
-    const u = this.uniforms;
-    u.uVP.value[slot].multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
-    u.uPos.value[slot].copy(cam.position);
-    const rc = item.rect || [0, 0, 1, 1];
-    u.uRect.value[slot].set(rc[0], rc[1], rc[2], rc[3]);
-    u.uDist.value[slot].set(item.k1 || 0, item.aspect);
   }
 
   invalidateDepth() {
